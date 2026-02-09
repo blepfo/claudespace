@@ -15,7 +15,7 @@ set -euo pipefail
 # Usage:
 #   claudespace init                  — Create the session and attach
 #   claudespace add <name> [branch]   — Add a worktree column (claude + shell)
-#   claudespace hide <name>           — Hide a worktree column (kill panes, keep worktree)
+#   claudespace hide                  — Hide current column (kill panes, keep worktree)
 #   claudespace delete <name>         — Delete worktree column, worktree, and branch
 #   claudespace move <left|right>     — Move current column left/right (wraps around)
 #   claudespace rename <name>         — Rename current column's panes
@@ -305,57 +305,19 @@ cmd_add() {
       _tag_pane "$shell_pane" "shell:${name}"
     fi
   else
-    # To create proper columns we must restructure the pane tree:
-    #   1. Break all shell panes out to temporary windows
-    #   2. With only claude panes left (flat horizontal row), split for new column
-    #   3. Rejoin each shell pane below its claude pane
-    #   4. Add shell pane for the new column
-
-    local last_claude
-    last_claude=$(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
-      | { grep ':claude:' || true; } | tail -1 | cut -d: -f1)
-
-    if [[ -z "$last_claude" ]]; then
-      echo "Error: could not find existing claude pane" >&2
-      exit 1
-    fi
-
-    # Collect shell pane IDs and their worktree names
-    local -a shell_pids=() shell_names=()
-    while IFS= read -r entry; do
-      shell_pids+=("${entry%%:*}")
-      shell_names+=("${entry##*shell:}")
-    done < <(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
-      | { grep ':shell:' || true; })
-
-    # 1. Break out all shell panes (pane IDs are preserved across windows)
-    for sp in "${shell_pids[@]}"; do
-      tmux break-pane -d -s "$sp"
-    done
-
-    # 2. Window now has only claude panes in a flat horizontal row — split for new column
+    # Use -fh (full-height horizontal split) to add a new top-level column
+    # without disturbing existing column layouts
     local new_claude
-    new_claude=$(tmux split-window -t "$last_claude" -h \
+    new_claude=$(tmux split-window -t "$CSPACE_SESSION:0" -fh \
       -c "$wt_path" -P -F '#{pane_id}')
     _tag_pane "$new_claude" "claude:${name}"
     tmux send-keys -t "$new_claude" "cd '$wt_path' && claude" C-m
 
-    # 3. Rejoin each shell pane below its corresponding claude pane
-    for i in "${!shell_pids[@]}"; do
-      local cp
-      cp=$(find_claude_pane "${shell_names[$i]}")
-      if [[ -n "$cp" ]]; then
-        tmux join-pane -v -l 30% -s "${shell_pids[$i]}" -t "$cp"
-      fi
-    done
-
-    # 4. Add shell pane for the new column
     local new_shell
     new_shell=$(tmux split-window -t "$new_claude" -v -p 30 \
       -c "$wt_path" -P -F '#{pane_id}')
     _tag_pane "$new_shell" "shell:${name}"
 
-    # Rebalance columns evenly
     _rebalance_layout
   fi
 
@@ -366,63 +328,95 @@ _rebalance_layout() {
   local num_cols
   num_cols=$(column_count)
 
-  if [[ "$num_cols" -gt 1 ]]; then
-    local working_width target_w
-    working_width=$(tmux display-message -t "$CSPACE_SESSION:0" -p '#{window_width}')
-    target_w=$(( working_width / num_cols ))
-    # Resize each claude pane to target width
+  if [[ "$num_cols" -ge 1 ]]; then
+    # Balance column widths
+    if [[ "$num_cols" -gt 1 ]]; then
+      local working_width target_w
+      working_width=$(tmux display-message -t "$CSPACE_SESSION:0" -p '#{window_width}')
+      target_w=$(( working_width / num_cols ))
+      tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
+        | { grep ':claude:' || true; } | cut -d: -f1 | while read -r pid; do
+          tmux resize-pane -t "$pid" -x "$target_w" 2>/dev/null || true
+        done
+    fi
+
+    # Balance row heights — give each shell pane 30% of the window height
+    local working_height target_shell_h
+    working_height=$(tmux display-message -t "$CSPACE_SESSION:0" -p '#{window_height}')
+    target_shell_h=$(( working_height * 30 / 100 ))
     tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
-      | { grep ':claude:' || true; } | cut -d: -f1 | while read -r pid; do
-        tmux resize-pane -t "$pid" -x "$target_w" 2>/dev/null || true
+      | { grep ':shell:' || true; } | cut -d: -f1 | while read -r pid; do
+        tmux resize-pane -t "$pid" -y "$target_shell_h" 2>/dev/null || true
       done
   fi
 }
 
 cmd_hide() {
-  if [[ -z "${1:-}" ]]; then
-    echo "Usage: claudespace hide <name>"
-    if session_exists; then
-      local active
-      active=$(_list_active_worktrees)
-      if [[ -n "$active" ]]; then
-        echo ""
-        echo "Active worktrees:"
-        echo "$active" | sed 's/^/  /'
-      fi
-    fi
-    exit 1
-  fi
-  local name="$1"
-
   if ! session_exists; then
     echo "No session found." >&2
     exit 1
   fi
 
-  # Kill the panes
-  local claude_pane shell_pane
-  claude_pane=$(find_claude_pane "$name")
-  shell_pane=$(find_shell_pane "$name")
+  local current_pane
+  current_pane="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}')}"
 
-  if [[ -n "$shell_pane" ]]; then
-    echo "Killing shell pane ($shell_pane) for '$name'"
-    tmux kill-pane -t "$shell_pane" 2>/dev/null || true
-  else
-    echo "No shell pane found for '$name'"
-  fi
-  if [[ -n "$claude_pane" ]]; then
-    echo "Killing claude pane ($claude_pane) for '$name'"
-    tmux kill-pane -t "$claude_pane" 2>/dev/null || true
-  else
-    echo "No claude pane found for '$name'"
+  local current_x
+  current_x=$(tmux display-message -t "$current_pane" -p '#{pane_left}')
+
+  # Collect all pane IDs in the current column (by matching x position)
+  local -a col_pane_ids=()
+  while IFS= read -r line; do
+    local pid px
+    pid="${line%% *}"
+    px="${line##* }"
+    if [[ "$px" == "$current_x" ]]; then
+      col_pane_ids+=("$pid")
+    fi
+  done < <(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id} #{pane_left}')
+
+  if [[ ${#col_pane_ids[@]} -eq 0 ]]; then
+    echo "Error: could not find panes in current column." >&2
+    exit 1
   fi
 
-  # Rebalance remaining columns
-  if session_exists; then
-    _rebalance_layout 2>/dev/null || true
-  fi
+  # Find the sorted unique column x positions to pick a neighbor for focus
+  local -a col_xs=()
+  while IFS= read -r x; do
+    col_xs+=("$x")
+  done < <(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_left}' | sort -un)
 
-  echo "Hidden '$name'. Worktree kept at $(worktree_path "$name")"
+  local focus_pane=""
+  for i in "${!col_xs[@]}"; do
+    if [[ "${col_xs[$i]}" == "$current_x" ]]; then
+      # Prefer column to the left, fall back to the right
+      if [[ $i -gt 0 ]]; then
+        local left_x="${col_xs[$((i - 1))]}"
+        focus_pane=$(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_left} #{pane_id}' \
+          | awk -v x="$left_x" '$1 == x {print $2; exit}')
+      elif [[ $(( i + 1 )) -lt ${#col_xs[@]} ]]; then
+        local right_x="${col_xs[$((i + 1))]}"
+        focus_pane=$(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_left} #{pane_id}' \
+          | awk -v x="$right_x" '$1 == x {print $2; exit}')
+      fi
+      break
+    fi
+  done
+
+  # Build a script to: focus neighbor, kill column panes, then rebalance.
+  # Must run via tmux run-shell because this script is running inside one of
+  # the panes being killed — killing it would terminate the script before
+  # rebalance runs.
+  local kill_cmds="{ "
+  if [[ -n "$focus_pane" ]]; then
+    kill_cmds+="tmux select-pane -t $focus_pane; "
+  fi
+  for pid in "${col_pane_ids[@]}"; do
+    kill_cmds+="tmux kill-pane -t $pid; "
+  done
+  kill_cmds+="claudespace balance; "
+  kill_cmds+="} >/dev/null 2>&1"
+
+  tmux run-shell -b "$kill_cmds"
 }
 
 cmd_delete() {
@@ -765,7 +759,6 @@ _cmd_complete() {
   local subcmd="${1:-}"
   case "$subcmd" in
     add)     _list_hidden_worktrees ;;
-    hide)    _list_active_worktrees ;;
     delete)  _list_all_worktrees ;;
   esac
 }
@@ -783,7 +776,7 @@ _claudespace() {
   fi
 
   case "$prev" in
-    add|hide|delete)
+    add|delete)
       local names
       names=$(claudespace _complete "$prev" 2>/dev/null)
       COMPREPLY=($(compgen -W "$names" -- "$cur"))
@@ -802,7 +795,7 @@ COMP
 case "${1:-help}" in
   init)         cmd_init ;;
   add)          shift; cmd_add "$@" ;;
-  hide)         shift; cmd_hide "$@" ;;
+  hide)         cmd_hide ;;
   delete)       shift; cmd_delete "$@" ;;
   move)          shift; cmd_move "$@" ;;
   rename)       shift; cmd_rename "$@" ;;
@@ -821,7 +814,7 @@ Usage:
   claudespace init                  Create session and attach
   claudespace add <name> [branch]   Add a worktree column (claude + shell)
   claudespace add --no-worktree [name]  Add column for repo root (no worktree, default name: main)
-  claudespace hide <name>           Hide column (kill panes, keep worktree)
+  claudespace hide                  Hide current column (kill panes, keep worktree)
   claudespace delete <name>         Delete column, worktree, and branch (prompts y/N)
   claudespace move <left|right>        Move current column left/right (wraps around)
   claudespace rename <name>           Rename current column's panes (claude:<name> + shell:<name>)
