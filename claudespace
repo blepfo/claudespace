@@ -518,6 +518,41 @@ cmd_kill() {
   echo "Session '$CSPACE_SESSION' killed."
 }
 
+cmd_balance() {
+  if ! session_exists; then
+    echo "No session found." >&2
+    exit 1
+  fi
+
+  local num_cols
+  num_cols=$(column_count)
+
+  if [[ "$num_cols" -eq 0 ]]; then
+    echo "No worktree columns to balance."
+    return
+  fi
+
+  # Balance column widths
+  local working_width target_w
+  working_width=$(tmux display-message -t "$CSPACE_SESSION:0" -p '#{window_width}')
+  target_w=$(( working_width / num_cols ))
+  tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
+    | { grep ':claude:' || true; } | cut -d: -f1 | while read -r pid; do
+      tmux resize-pane -t "$pid" -x "$target_w" 2>/dev/null || true
+    done
+
+  # Balance row heights — give each shell pane 30% of the window height
+  local working_height target_shell_h
+  working_height=$(tmux display-message -t "$CSPACE_SESSION:0" -p '#{window_height}')
+  target_shell_h=$(( working_height * 30 / 100 ))
+  tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
+    | { grep ':shell:' || true; } | cut -d: -f1 | while read -r pid; do
+      tmux resize-pane -t "$pid" -y "$target_shell_h" 2>/dev/null || true
+    done
+
+  echo "Balanced $num_cols column(s)."
+}
+
 cmd_deploy() {
   local target="${1:-}"
 
@@ -591,7 +626,15 @@ cmd_deploy() {
 
   echo ""
   echo "Deployed '$wt_branch' onto '$target'."
-  echo "Push with: git push origin $target"
+
+  # Push to remote
+  echo "  Pushing $target to origin..."
+  git -C "$main_root" push origin "$target" || {
+    echo "Error: push failed" >&2
+    exit 1
+  }
+
+  echo "Done. '$target' pushed to origin."
 }
 
 # Internal: output completion words for a subcommand
@@ -612,7 +655,7 @@ _claudespace() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
-    COMPREPLY=($(compgen -W "init add hide delete deploy list attach kill help completions" -- "$cur"))
+    COMPREPLY=($(compgen -W "init add hide delete deploy balance list attach kill help completions" -- "$cur"))
     return
   fi
 
@@ -636,6 +679,7 @@ case "${1:-help}" in
   hide)         shift; cmd_hide "$@" ;;
   delete)       shift; cmd_delete "$@" ;;
   deploy)       shift; cmd_deploy "$@" ;;
+  balance)      cmd_balance ;;
   list)         cmd_list ;;
   attach)       cmd_attach ;;
   kill)         cmd_kill ;;
@@ -652,6 +696,7 @@ Usage:
   claudespace hide <name>           Hide column (kill panes, keep worktree)
   claudespace delete <name>         Delete column, worktree, and branch (prompts y/N)
   claudespace deploy <target-branch>  Rebase current worktree onto branch and fast-forward merge
+  claudespace balance               Resize panes to equal grid size
   claudespace list                  List active worktree columns
   claudespace attach                Attach to the session
   claudespace kill                  Kill the tmux session
