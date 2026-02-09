@@ -212,16 +212,31 @@ cmd_init() {
 }
 
 cmd_add() {
+  # Parse --no-worktree flag
+  local no_worktree=false
+  local args=()
+  for arg in "$@"; do
+    case "$arg" in
+      --no-worktree) no_worktree=true ;;
+      *) args+=("$arg") ;;
+    esac
+  done
+  set -- "${args[@]+"${args[@]}"}"
+
   if [[ -z "${1:-}" ]]; then
-    echo "Usage: claudespace add <name> [base-branch]"
-    local hidden
-    hidden=$(_list_hidden_worktrees)
-    if [[ -n "$hidden" ]]; then
-      echo ""
-      echo "Hidden worktrees (can re-add):"
-      echo "$hidden" | sed 's/^/  /'
+    if [[ "$no_worktree" == true ]]; then
+      set -- "main"
+    else
+      echo "Usage: claudespace add [--no-worktree] <name> [base-branch]"
+      local hidden
+      hidden=$(_list_hidden_worktrees)
+      if [[ -n "$hidden" ]]; then
+        echo ""
+        echo "Hidden worktrees (can re-add):"
+        echo "$hidden" | sed 's/^/  /'
+      fi
+      exit 1
     fi
-    exit 1
   fi
   local name="$1"
   local base="${2:-HEAD}"
@@ -235,19 +250,23 @@ cmd_add() {
   main_root=$(main_repo_root)
 
   local wt_path
-  wt_path=$(worktree_path "$name")
+  if [[ "$no_worktree" == true ]]; then
+    wt_path="$main_root"
+  else
+    wt_path=$(worktree_path "$name")
 
-  # Create the git worktree if it doesn't exist
-  if [[ ! -d "$wt_path" ]]; then
-    echo "Creating worktree: $wt_path (branch: $name from $base)"
-    git -C "$main_root" worktree add "$wt_path" -b "$name" "$base" 2>/dev/null || \
-    git -C "$main_root" worktree add "$wt_path" "$name" || {
-      echo "Error: failed to create worktree" >&2
-      exit 1
-    }
+    # Create the git worktree if it doesn't exist
+    if [[ ! -d "$wt_path" ]]; then
+      echo "Creating worktree: $wt_path (branch: $name from $base)"
+      git -C "$main_root" worktree add "$wt_path" -b "$name" "$base" 2>/dev/null || \
+      git -C "$main_root" worktree add "$wt_path" "$name" || {
+        echo "Error: failed to create worktree" >&2
+        exit 1
+      }
 
-    # Copy gitignored files listed in .worktreeinclude (matches Desktop behavior)
-    copy_worktreeinclude "$main_root" "$wt_path"
+      # Copy gitignored files listed in .worktreeinclude (matches Desktop behavior)
+      copy_worktreeinclude "$main_root" "$wt_path"
+    fi
   fi
 
   local current_cols
@@ -629,6 +648,7 @@ claudespace — single-window tmux workspace for Claude Code worktrees
 Usage:
   claudespace init                  Create session and attach
   claudespace add <name> [branch]   Add a worktree column (claude + shell)
+  claudespace add --no-worktree [name]  Add column for repo root (no worktree, default name: main)
   claudespace hide <name>           Hide column (kill panes, keep worktree)
   claudespace delete <name>         Delete column, worktree, and branch (prompts y/N)
   claudespace deploy <target-branch>  Rebase current worktree onto branch and fast-forward merge
