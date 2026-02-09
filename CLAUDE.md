@@ -9,7 +9,7 @@ claudespace is a single-file bash script (~560 lines) that manages a tmux sessio
 The script is organized into three sections:
 
 1. **Helpers** — Pure functions for paths, tmux queries, and worktree listing
-2. **Commands** — `cmd_init`, `cmd_add`, `cmd_hide`, `cmd_delete`, `cmd_list`, `cmd_attach`, `cmd_kill`, `cmd_completions`
+2. **Commands** — `cmd_init`, `cmd_add`, `cmd_hide`, `cmd_delete`, `cmd_deploy`, `cmd_list`, `cmd_attach`, `cmd_kill`, `cmd_completions`
 3. **Main** — Case statement dispatch
 
 ### Key design decisions
@@ -27,6 +27,8 @@ This produces the correct column layout regardless of how many columns exist.
 **Worktree location:** Defaults to `~/.claude-worktrees/<repo>/` to match Claude Desktop's convention, so worktrees appear in both tools.
 
 **`.worktreeinclude`:** Copies gitignored files (`.env`, `local_data/`, etc.) into new worktrees, replicating Claude Desktop behavior.
+
+**Deploy via rebase + fast-forward:** `cmd_deploy` rebases the worktree branch onto the target, then fast-forward merges. If the main repo is already on the target branch, it uses `git merge --ff-only`. If it's on a different branch, it uses `git update-ref` to advance the target ref without switching checkouts. Does not auto-push.
 
 ## Conventions
 
@@ -49,6 +51,7 @@ claudespace add test3         # third column
 claudespace list              # verify all columns visible
 claudespace hide test2        # verify middle column removed, others rebalance
 claudespace add test2         # verify re-add works
+claudespace deploy test2 develop  # verify rebase + fast-forward merge onto develop
 claudespace delete test3      # verify prompts, cleans up worktree + branch
 claudespace kill              # verify session destroyed
 ```
@@ -58,3 +61,4 @@ Key things to verify:
 - `claudespace hide` finds both claude and shell panes (claude pane title gets overwritten by the CLI, but `@cspace` option persists)
 - Adding after hiding works correctly
 - Shell panes are 30% height, claude panes are 70%
+- `claudespace deploy` rebases and fast-forwards correctly, refuses on dirty worktree, prints rebase conflict instructions on failure

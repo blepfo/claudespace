@@ -75,6 +75,15 @@ claudespace delete feature-x
 
 Kills panes, removes the git worktree, and deletes the branch. Prompts for confirmation.
 
+### Deploy a worktree to a branch
+
+```bash
+claudespace deploy feature-x            # rebase onto develop and fast-forward merge
+claudespace deploy feature-x main       # rebase onto main instead
+```
+
+Rebases the worktree's branch on top of the target (default: `develop`), then fast-forward merges it. Refuses to run if the worktree has uncommitted changes. Does not push automatically — prints the push command for you to run.
+
 ### Other commands
 
 ```bash
@@ -83,7 +92,7 @@ claudespace attach      # Reattach to the session
 claudespace kill        # Kill the tmux session
 ```
 
-Running `add`, `hide`, or `delete` without a name shows available worktrees as suggestions.
+Running `add`, `hide`, `delete`, or `deploy` without a name shows available worktrees as suggestions.
 
 ## .worktreeinclude
 

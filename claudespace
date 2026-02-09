@@ -487,6 +487,84 @@ cmd_kill() {
   echo "Session '$CSPACE_SESSION' killed."
 }
 
+cmd_deploy() {
+  if [[ -z "${1:-}" ]]; then
+    echo "Usage: claudespace deploy <name> [target-branch]"
+    local all
+    all=$(_list_all_worktrees)
+    if [[ -n "$all" ]]; then
+      echo ""
+      echo "Worktrees:"
+      echo "$all" | sed 's/^/  /'
+    fi
+    exit 1
+  fi
+  local name="$1"
+  local target="${2:-develop}"
+
+  local main_root
+  main_root=$(main_repo_root)
+
+  local wt_path
+  wt_path=$(worktree_path "$name")
+
+  if [[ ! -d "$wt_path" ]]; then
+    echo "Error: worktree '$name' not found at $wt_path" >&2
+    exit 1
+  fi
+
+  # Get the worktree's branch name
+  local wt_branch
+  wt_branch=$(git -C "$wt_path" rev-parse --abbrev-ref HEAD)
+
+  # Check for uncommitted changes
+  if ! git -C "$wt_path" diff --quiet || ! git -C "$wt_path" diff --cached --quiet; then
+    echo "Error: worktree '$name' has uncommitted changes. Commit or stash first." >&2
+    exit 1
+  fi
+
+  echo "Deploying '$wt_branch' onto '$target'..."
+
+  # Rebase worktree branch onto target
+  echo "  Rebasing $wt_branch onto $target..."
+  if ! git -C "$wt_path" rebase "$target"; then
+    echo "" >&2
+    echo "Rebase failed. Resolve conflicts in: $wt_path" >&2
+    echo "Then run: cd '$wt_path' && git rebase --continue" >&2
+    exit 1
+  fi
+
+  # Fast-forward target branch to include worktree commits
+  local current_branch
+  current_branch=$(git -C "$main_root" rev-parse --abbrev-ref HEAD)
+
+  if [[ "$current_branch" == "$target" ]]; then
+    # Main repo is already on target branch — merge directly
+    echo "  Fast-forward merging into $target..."
+    git -C "$main_root" merge --ff-only "$wt_branch" || {
+      echo "Error: fast-forward merge failed" >&2
+      exit 1
+    }
+  else
+    # Main repo is on a different branch — update ref without checkout
+    echo "  Updating $target ref..."
+    local new_tip current_target
+    new_tip=$(git -C "$wt_path" rev-parse HEAD)
+    current_target=$(git -C "$main_root" rev-parse "$target")
+
+    if git -C "$main_root" merge-base --is-ancestor "$current_target" "$new_tip"; then
+      git -C "$main_root" update-ref "refs/heads/$target" "$new_tip" "$current_target"
+    else
+      echo "Error: cannot fast-forward $target to $wt_branch" >&2
+      exit 1
+    fi
+  fi
+
+  echo ""
+  echo "Deployed '$wt_branch' onto '$target'."
+  echo "Push with: git push origin $target"
+}
+
 # Internal: output completion words for a subcommand
 _cmd_complete() {
   local subcmd="${1:-}"
@@ -494,6 +572,7 @@ _cmd_complete() {
     add)     _list_hidden_worktrees ;;
     hide)    _list_active_worktrees ;;
     delete)  _list_all_worktrees ;;
+    deploy)  _list_all_worktrees ;;
   esac
 }
 
@@ -505,12 +584,12 @@ _claudespace() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
-    COMPREPLY=($(compgen -W "init add hide delete list attach kill help completions" -- "$cur"))
+    COMPREPLY=($(compgen -W "init add hide delete deploy list attach kill help completions" -- "$cur"))
     return
   fi
 
   case "$prev" in
-    add|hide|delete)
+    add|hide|delete|deploy)
       local names
       names=$(claudespace _complete "$prev" 2>/dev/null)
       COMPREPLY=($(compgen -W "$names" -- "$cur"))
@@ -528,6 +607,7 @@ case "${1:-help}" in
   add)          shift; cmd_add "$@" ;;
   hide)         shift; cmd_hide "$@" ;;
   delete)       shift; cmd_delete "$@" ;;
+  deploy)       shift; cmd_deploy "$@" ;;
   list)         cmd_list ;;
   attach)       cmd_attach ;;
   kill)         cmd_kill ;;
@@ -542,6 +622,7 @@ Usage:
   claudespace add <name> [branch]   Add a worktree column (claude + shell)
   claudespace hide <name>           Hide column (kill panes, keep worktree)
   claudespace delete <name>         Delete column, worktree, and branch (prompts y/N)
+  claudespace deploy <name> [branch] Rebase worktree onto branch and fast-forward merge (default: develop)
   claudespace list                  List active worktree columns
   claudespace attach                Attach to the session
   claudespace kill                  Kill the tmux session
