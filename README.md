@@ -77,12 +77,14 @@ Kills panes, removes the git worktree, and deletes the branch. Prompts for confi
 
 ### Deploy a worktree to a branch
 
+From a worktree's shell pane:
+
 ```bash
-claudespace deploy feature-x            # rebase onto develop and fast-forward merge
-claudespace deploy feature-x main       # rebase onto main instead
+claudespace deploy develop       # rebase onto develop and fast-forward merge
+claudespace deploy main          # rebase onto main instead
 ```
 
-Rebases the worktree's branch on top of the target (default: `develop`), then fast-forward merges it. Refuses to run if the worktree has uncommitted changes. Does not push automatically — prints the push command for you to run.
+Auto-detects the current worktree from your working directory. Rebases the worktree's branch on top of the target, then fast-forward merges it. Refuses to run if the worktree has uncommitted changes. Does not push automatically — prints the push command for you to run.
 
 ### Other commands
 

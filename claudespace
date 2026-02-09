@@ -145,6 +145,18 @@ find_shell_pane() {
     | { grep ":shell:${name}$" || true; } | head -1 | cut -d: -f1
 }
 
+# Detect worktree name from current working directory
+_detect_worktree_name() {
+  local toplevel wt_parent
+  toplevel=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+  wt_parent=$(worktree_parent)
+  if [[ "$toplevel" == "$wt_parent"/* ]]; then
+    basename "$toplevel"
+  else
+    return 1
+  fi
+}
+
 # List all worktree directory names
 _list_all_worktrees() {
   local wt_dir
@@ -488,30 +500,28 @@ cmd_kill() {
 }
 
 cmd_deploy() {
-  if [[ -z "${1:-}" ]]; then
-    echo "Usage: claudespace deploy <name> [target-branch]"
-    local all
-    all=$(_list_all_worktrees)
-    if [[ -n "$all" ]]; then
-      echo ""
-      echo "Worktrees:"
-      echo "$all" | sed 's/^/  /'
-    fi
+  local target="${1:-}"
+
+  if [[ -z "$target" ]]; then
+    echo "Usage: claudespace deploy <target-branch>"
+    echo ""
+    echo "Rebases the current worktree onto <target-branch> and fast-forward merges."
+    echo "Run from inside a worktree's shell pane."
     exit 1
   fi
-  local name="$1"
-  local target="${2:-develop}"
+
+  local name
+  name=$(_detect_worktree_name) || {
+    echo "Error: not inside a claudespace worktree." >&2
+    echo "Run this from a worktree's shell pane." >&2
+    exit 1
+  }
 
   local main_root
   main_root=$(main_repo_root)
 
   local wt_path
   wt_path=$(worktree_path "$name")
-
-  if [[ ! -d "$wt_path" ]]; then
-    echo "Error: worktree '$name' not found at $wt_path" >&2
-    exit 1
-  fi
 
   # Get the worktree's branch name
   local wt_branch
@@ -572,7 +582,6 @@ _cmd_complete() {
     add)     _list_hidden_worktrees ;;
     hide)    _list_active_worktrees ;;
     delete)  _list_all_worktrees ;;
-    deploy)  _list_all_worktrees ;;
   esac
 }
 
@@ -589,7 +598,7 @@ _claudespace() {
   fi
 
   case "$prev" in
-    add|hide|delete|deploy)
+    add|hide|delete)
       local names
       names=$(claudespace _complete "$prev" 2>/dev/null)
       COMPREPLY=($(compgen -W "$names" -- "$cur"))
@@ -622,7 +631,7 @@ Usage:
   claudespace add <name> [branch]   Add a worktree column (claude + shell)
   claudespace hide <name>           Hide column (kill panes, keep worktree)
   claudespace delete <name>         Delete column, worktree, and branch (prompts y/N)
-  claudespace deploy <name> [branch] Rebase worktree onto branch and fast-forward merge (default: develop)
+  claudespace deploy <target-branch>  Rebase current worktree onto branch and fast-forward merge
   claudespace list                  List active worktree columns
   claudespace attach                Attach to the session
   claudespace kill                  Kill the tmux session
