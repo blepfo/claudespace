@@ -445,32 +445,7 @@ cmd_delete() {
     return
   fi
 
-  # Kill tmux panes if session exists
-  if session_exists; then
-    local claude_pane shell_pane
-    claude_pane=$(find_claude_pane "$name")
-    shell_pane=$(find_shell_pane "$name")
-
-    if [[ -n "$shell_pane" ]]; then
-      echo "Killing shell pane ($shell_pane) for '$name'"
-      tmux kill-pane -t "$shell_pane" 2>/dev/null || true
-    else
-      echo "No shell pane found for '$name'"
-    fi
-    if [[ -n "$claude_pane" ]]; then
-      echo "Killing claude pane ($claude_pane) for '$name'"
-      tmux kill-pane -t "$claude_pane" 2>/dev/null || true
-    else
-      echo "No claude pane found for '$name'"
-    fi
-
-    # Rebalance remaining columns
-    if session_exists; then
-      _rebalance_layout 2>/dev/null || true
-    fi
-  fi
-
-  # Remove the worktree
+  # Remove the worktree (before killing panes, since this script may be running in one)
   if [[ -d "$wt_path" ]]; then
     git worktree remove "$wt_path" --force 2>/dev/null || true
     echo "Worktree removed: $wt_path"
@@ -482,6 +457,25 @@ cmd_delete() {
   git branch -D "$name" 2>/dev/null && echo "Branch '$name' deleted." || echo "No branch '$name' found."
 
   echo "Delete complete for '$name'."
+
+  # Kill tmux panes last (may terminate this script if run from within a pane)
+  if session_exists; then
+    local claude_pane shell_pane
+    claude_pane=$(find_claude_pane "$name")
+    shell_pane=$(find_shell_pane "$name")
+
+    if [[ -n "$shell_pane" ]]; then
+      tmux kill-pane -t "$shell_pane" 2>/dev/null || true
+    fi
+    if [[ -n "$claude_pane" ]]; then
+      tmux kill-pane -t "$claude_pane" 2>/dev/null || true
+    fi
+
+    # Rebalance remaining columns
+    if session_exists; then
+      _rebalance_layout 2>/dev/null || true
+    fi
+  fi
 }
 
 cmd_list() {
