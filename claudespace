@@ -201,9 +201,10 @@ cmd_init() {
   # Create session with a single terminal pane
   tmux new-session -d -s "$CSPACE_SESSION" -c "$root" -x "$(tput cols)" -y "$(tput lines)"
 
-  # Prevent applications (claude, shell prompts) from overriding pane titles
+  # Prevent applications (claude, shell prompts) from overriding pane/window titles
   tmux set-option -t "$CSPACE_SESSION" allow-rename off
   tmux set-option -t "$CSPACE_SESSION" set-titles off
+  tmux set-option -t "$CSPACE_SESSION" allow-set-title off
 
   _tag_pane "$CSPACE_SESSION:0.0" "terminal"
 
