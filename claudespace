@@ -18,6 +18,7 @@ set -euo pipefail
 #   claudespace hide <name>           — Hide a worktree column (kill panes, keep worktree)
 #   claudespace delete <name>         — Delete worktree column, worktree, and branch
 #   claudespace move <left|right>     — Move current column left/right (wraps around)
+#   claudespace rename <name>         — Rename current column's panes
 #   claudespace list                  — List active worktree columns
 #   claudespace attach                — Attach to the session
 #
@@ -634,6 +635,47 @@ cmd_move() {
   echo "Swapped column $((idx+1)) $direction with column $((target_idx+1))."
 }
 
+cmd_rename() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    echo "Usage: claudespace rename <name>"
+    exit 1
+  fi
+
+  if ! session_exists; then
+    echo "No session found." >&2
+    exit 1
+  fi
+
+  local current_pane
+  current_pane="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}')}"
+
+  local current_x
+  current_x=$(tmux display-message -t "$current_pane" -p '#{pane_left}')
+
+  # Get panes in current column sorted top-to-bottom
+  local all_panes
+  all_panes=$(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_left} #{pane_top} #{pane_id}')
+
+  local -a col_panes=()
+  while read -r _ _ pid; do
+    col_panes+=("$pid")
+  done < <(echo "$all_panes" | awk -v x="$current_x" '$1 == x' | sort -k2 -n)
+
+  if [[ ${#col_panes[@]} -eq 0 ]]; then
+    echo "Error: could not find panes in current column." >&2
+    exit 1
+  fi
+
+  # Tag top pane as claude, bottom pane as shell
+  _tag_pane "${col_panes[0]}" "claude:${name}"
+  if [[ ${#col_panes[@]} -ge 2 ]]; then
+    _tag_pane "${col_panes[1]}" "shell:${name}"
+  fi
+
+  echo "Renamed column to '$name'."
+}
+
 cmd_deploy() {
   local target="${1:-}"
 
@@ -736,7 +778,7 @@ _claudespace() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
-    COMPREPLY=($(compgen -W "init add hide delete move deploy balance list attach kill help completions" -- "$cur"))
+    COMPREPLY=($(compgen -W "init add hide delete move rename deploy balance list attach kill help completions" -- "$cur"))
     return
   fi
 
@@ -763,6 +805,7 @@ case "${1:-help}" in
   hide)         shift; cmd_hide "$@" ;;
   delete)       shift; cmd_delete "$@" ;;
   move)          shift; cmd_move "$@" ;;
+  rename)       shift; cmd_rename "$@" ;;
   deploy)       shift; cmd_deploy "$@" ;;
   balance)      cmd_balance ;;
   list)         cmd_list ;;
@@ -781,6 +824,7 @@ Usage:
   claudespace hide <name>           Hide column (kill panes, keep worktree)
   claudespace delete <name>         Delete column, worktree, and branch (prompts y/N)
   claudespace move <left|right>        Move current column left/right (wraps around)
+  claudespace rename <name>           Rename current column's panes (claude:<name> + shell:<name>)
   claudespace deploy <target-branch>  Rebase current worktree onto branch and fast-forward merge
   claudespace balance               Resize panes to equal grid size
   claudespace list                  List active worktree columns

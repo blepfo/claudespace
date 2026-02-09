@@ -95,6 +95,14 @@ claudespace move right   # Swap current column with the one to its right
 
 Wraps around at the edges. Works from any pane in the column.
 
+### Rename a column
+
+```bash
+claudespace rename my-feature
+```
+
+Re-tags the current column's panes to `claude:my-feature` and `shell:my-feature`. Useful after manually splitting a pane or to correct a column's identity.
+
 ### Other commands
 
 ```bash
