@@ -86,9 +86,19 @@ claudespace deploy main          # rebase onto main instead
 
 Auto-detects the current worktree from your working directory. Rebases the worktree's branch on top of the target, then fast-forward merges it. Refuses to run if the worktree has uncommitted changes. Does not push automatically — prints the push command for you to run.
 
+### Move a column
+
+```bash
+claudespace move left    # Swap current column with the one to its left
+claudespace move right   # Swap current column with the one to its right
+```
+
+Wraps around at the edges. Works from any pane in the column.
+
 ### Other commands
 
 ```bash
+claudespace balance     # Resize panes to equal grid
 claudespace list        # Show active columns
 claudespace attach      # Reattach to the session
 claudespace kill        # Kill the tmux session
@@ -121,3 +131,4 @@ This replicates what Claude Desktop does automatically when creating worktrees.
 - Each worktree column is a pair of tmux panes (claude + shell) arranged vertically within a column.
 - Panes are tracked using tmux user-defined options (`@cspace`), which are immune to applications overwriting pane titles.
 - When adding columns beyond the first, claudespace restructures the tmux pane tree (break shell panes out, add the column, rejoin) to ensure proper side-by-side layout.
+- Moving columns uses geometry-based detection (pane x/y positions) rather than tags, so it works reliably even with manually created panes.

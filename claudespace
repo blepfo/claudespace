@@ -17,6 +17,7 @@ set -euo pipefail
 #   claudespace add <name> [branch]   — Add a worktree column (claude + shell)
 #   claudespace hide <name>           — Hide a worktree column (kill panes, keep worktree)
 #   claudespace delete <name>         — Delete worktree column, worktree, and branch
+#   claudespace move <left|right>     — Move current column left/right (wraps around)
 #   claudespace list                  — List active worktree columns
 #   claudespace attach                — Attach to the session
 #
@@ -548,6 +549,91 @@ cmd_balance() {
   echo "Balanced $num_cols column(s)."
 }
 
+cmd_move() {
+  local direction="${1:-}"
+  if [[ "$direction" != "left" && "$direction" != "right" ]]; then
+    echo "Usage: claudespace move <left|right>"
+    exit 1
+  fi
+
+  if ! session_exists; then
+    echo "No session found." >&2
+    exit 1
+  fi
+
+  local current_pane
+  current_pane="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}')}"
+
+  # Identify columns purely by pane x position
+  local current_x
+  current_x=$(tmux display-message -t "$current_pane" -p '#{pane_left}')
+
+  # Get sorted unique column x positions
+  local -a col_xs=()
+  while IFS= read -r x; do
+    col_xs+=("$x")
+  done < <(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_left}' | sort -un)
+
+  local num_cols=${#col_xs[@]}
+  if [[ "$num_cols" -lt 2 ]]; then
+    echo "Need at least 2 columns to move."
+    return
+  fi
+
+  # Find current column index
+  local idx=-1
+  for i in "${!col_xs[@]}"; do
+    if [[ "${col_xs[$i]}" == "$current_x" ]]; then
+      idx=$i
+      break
+    fi
+  done
+
+  if [[ "$idx" -eq -1 ]]; then
+    echo "Error: could not determine current column." >&2
+    exit 1
+  fi
+
+  # Calculate target index with wrapping
+  local target_idx
+  if [[ "$direction" == "left" ]]; then
+    target_idx=$(( (idx - 1 + num_cols) % num_cols ))
+  else
+    target_idx=$(( (idx + 1) % num_cols ))
+  fi
+
+  local src_x="${col_xs[$idx]}"
+  local tgt_x="${col_xs[$target_idx]}"
+
+  # Collect panes in each column, sorted top-to-bottom by y position
+  local all_panes
+  all_panes=$(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_left} #{pane_top} #{pane_id}')
+
+  local -a src_panes=() tgt_panes=()
+  while read -r _ _ pid; do
+    src_panes+=("$pid")
+  done < <(echo "$all_panes" | awk -v x="$src_x" '$1 == x' | sort -k2 -n)
+
+  while read -r _ _ pid; do
+    tgt_panes+=("$pid")
+  done < <(echo "$all_panes" | awk -v x="$tgt_x" '$1 == x' | sort -k2 -n)
+
+  # Swap panes row by row (top-to-bottom)
+  local rows=${#src_panes[@]}
+  [[ ${#tgt_panes[@]} -lt $rows ]] && rows=${#tgt_panes[@]}
+
+  for (( i=0; i<rows; i++ )); do
+    tmux swap-pane -s "${src_panes[$i]}" -t "${tgt_panes[$i]}"
+  done
+
+  _rebalance_layout
+
+  # Keep focus on the pane the user ran the command from
+  tmux select-pane -t "$current_pane"
+
+  echo "Swapped column $((idx+1)) $direction with column $((target_idx+1))."
+}
+
 cmd_deploy() {
   local target="${1:-}"
 
@@ -650,7 +736,7 @@ _claudespace() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
-    COMPREPLY=($(compgen -W "init add hide delete deploy balance list attach kill help completions" -- "$cur"))
+    COMPREPLY=($(compgen -W "init add hide delete move deploy balance list attach kill help completions" -- "$cur"))
     return
   fi
 
@@ -659,6 +745,9 @@ _claudespace() {
       local names
       names=$(claudespace _complete "$prev" 2>/dev/null)
       COMPREPLY=($(compgen -W "$names" -- "$cur"))
+      ;;
+    move)
+      COMPREPLY=($(compgen -W "left right" -- "$cur"))
       ;;
   esac
 }
@@ -673,6 +762,7 @@ case "${1:-help}" in
   add)          shift; cmd_add "$@" ;;
   hide)         shift; cmd_hide "$@" ;;
   delete)       shift; cmd_delete "$@" ;;
+  move)          shift; cmd_move "$@" ;;
   deploy)       shift; cmd_deploy "$@" ;;
   balance)      cmd_balance ;;
   list)         cmd_list ;;
@@ -690,6 +780,7 @@ Usage:
   claudespace add --no-worktree [name]  Add column for repo root (no worktree, default name: main)
   claudespace hide <name>           Hide column (kill panes, keep worktree)
   claudespace delete <name>         Delete column, worktree, and branch (prompts y/N)
+  claudespace move <left|right>        Move current column left/right (wraps around)
   claudespace deploy <target-branch>  Rebase current worktree onto branch and fast-forward merge
   claudespace balance               Resize panes to equal grid size
   claudespace list                  List active worktree columns
