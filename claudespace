@@ -1,0 +1,559 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# claudespace: Single-window tmux workspace for Claude Code worktrees
+#
+# Layout:
+#   ┌──────────────┬───────────────┬────────────────┐
+#   │ claude       │ claude        │ claude         │
+#   │ (worktree 1) │ (worktree 2)  │ (worktree 3)  │
+#   ├──────────────┼───────────────┼────────────────┤
+#   │ shell        │ shell         │ shell          │
+#   │ (worktree 1) │ (worktree 2)  │ (worktree 3)  │
+#   └──────────────┴───────────────┴────────────────┘
+#
+# Usage:
+#   claudespace init                  — Create the session and attach
+#   claudespace add <name> [branch]   — Add a worktree column (claude + shell)
+#   claudespace hide <name>           — Hide a worktree column (kill panes, keep worktree)
+#   claudespace delete <name>         — Delete worktree column, worktree, and branch
+#   claudespace list                  — List active worktree columns
+#   claudespace attach                — Attach to the session
+#
+# Prerequisites: tmux, git, claude (Claude Code CLI)
+#
+# Configuration (env vars):
+#   CSPACE_SESSION    — tmux session name          (default: claudespace)
+#   CSPACE_WT_DIR     — worktree parent directory   (default: ../<repo>__worktrees)
+
+CSPACE_SESSION="${CSPACE_SESSION:-claudespace}"
+
+# --- Helpers ---
+
+repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null || {
+    echo "Error: not inside a git repository" >&2
+    exit 1
+  }
+}
+
+# Get the main worktree root (works correctly from any worktree)
+main_repo_root() {
+  git worktree list --porcelain | head -1 | sed 's/^worktree //'
+}
+
+repo_name() {
+  basename "$(main_repo_root)"
+}
+
+# Process .worktreeinclude — copies gitignored files matching patterns to new worktree
+# This replicates what Claude Code Desktop does automatically
+copy_worktreeinclude() {
+  local src_root="$1"   # main worktree / repo root
+  local dest="$2"       # new worktree path
+  local include_file="$src_root/.worktreeinclude"
+
+  if [[ ! -f "$include_file" ]]; then
+    return 0
+  fi
+
+  echo "Processing .worktreeinclude patterns..."
+  while IFS= read -r pattern || [[ -n "$pattern" ]]; do
+    # Skip blank lines and comments
+    [[ -z "$pattern" || "$pattern" =~ ^# ]] && continue
+    # Trim whitespace
+    pattern="$(echo "$pattern" | xargs)"
+
+    # Use git to check if files matching this pattern are ignored
+    # Then copy them if they exist in the source
+    # Handle both file and directory patterns
+    while IFS= read -r -d '' file; do
+      # Only copy if the file is gitignored
+      if git -C "$src_root" check-ignore -q "$file" 2>/dev/null; then
+        local rel="${file#$src_root/}"
+        local dest_file="$dest/$rel"
+        mkdir -p "$(dirname "$dest_file")"
+        if [[ -d "$file" ]]; then
+          cp -r "$file" "$dest_file"
+        else
+          cp "$file" "$dest_file"
+        fi
+        echo "  Copied: $rel"
+      fi
+    done < <(cd "$src_root" && find . -path "./.git" -prune -o -name "$(basename "$pattern")" -print0 2>/dev/null \
+      | sed "s|^\./|$src_root/|" | tr '\n' '\0')
+
+    # Also try glob expansion directly for simple patterns like .env, .env.local
+    local expanded
+    expanded=$(cd "$src_root" && ls -d $pattern 2>/dev/null || true)
+    for match in $expanded; do
+      local full="$src_root/$match"
+      if [[ -e "$full" ]] && git -C "$src_root" check-ignore -q "$match" 2>/dev/null; then
+        local dest_file="$dest/$match"
+        if [[ ! -e "$dest_file" ]]; then
+          mkdir -p "$(dirname "$dest_file")"
+          cp -r "$full" "$dest_file"
+          echo "  Copied: $match"
+        fi
+      fi
+    done
+  done < "$include_file"
+}
+
+worktree_parent() {
+  if [[ -n "${CSPACE_WT_DIR:-}" ]]; then
+    echo "$CSPACE_WT_DIR"
+  else
+    echo "$HOME/.claude-worktrees/$(repo_name)"
+  fi
+}
+
+worktree_path() {
+  echo "$(worktree_parent)/$1"
+}
+
+session_exists() {
+  tmux has-session -t "$CSPACE_SESSION" 2>/dev/null
+}
+
+# Tag a pane with a role via tmux user option (immune to application title changes)
+_tag_pane() {
+  local pane_id="$1" role="$2"
+  tmux set-option -p -t "$pane_id" @cspace "$role"
+  tmux select-pane -t "$pane_id" -T "$role"  # also set title for border display
+}
+
+# Count current worktree columns by counting claude-tagged panes
+column_count() {
+  local count
+  count=$(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{@cspace}' \
+    | grep -c '^claude:' || true)
+  echo "${count:-0}"
+}
+
+# Find the claude pane for a given worktree name (by @cspace option)
+find_claude_pane() {
+  local name="$1"
+  tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
+    | { grep ":claude:${name}$" || true; } | head -1 | cut -d: -f1
+}
+
+# Find the shell pane for a given worktree name (by @cspace option)
+find_shell_pane() {
+  local name="$1"
+  tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
+    | { grep ":shell:${name}$" || true; } | head -1 | cut -d: -f1
+}
+
+# List all worktree directory names
+_list_all_worktrees() {
+  local wt_dir
+  wt_dir=$(worktree_parent)
+  if [[ -d "$wt_dir" ]]; then
+    ls "$wt_dir" 2>/dev/null
+  fi
+}
+
+# List active worktree names (have panes in the session)
+_list_active_worktrees() {
+  if session_exists; then
+    tmux list-panes -t "$CSPACE_SESSION:0" -F '#{@cspace}' \
+      | grep '^claude:' | sed 's/^claude://'
+  fi
+}
+
+# List hidden worktrees (exist on disk but no active panes)
+_list_hidden_worktrees() {
+  local all active name
+  all=$(_list_all_worktrees)
+  active=$(_list_active_worktrees)
+  for name in $all; do
+    if ! echo "$active" | grep -qx "$name"; then
+      echo "$name"
+    fi
+  done
+}
+
+# --- Commands ---
+
+cmd_init() {
+  if session_exists; then
+    echo "Session '$CSPACE_SESSION' already exists. Use 'claudespace attach' or 'claudespace add <name>'."
+    exit 1
+  fi
+
+  local root
+  root=$(main_repo_root)
+  mkdir -p "$(worktree_parent)"
+
+  # Create session with a single terminal pane
+  tmux new-session -d -s "$CSPACE_SESSION" -c "$root" -x "$(tput cols)" -y "$(tput lines)"
+
+  # Prevent applications (claude, shell prompts) from overriding pane titles
+  tmux set-option -t "$CSPACE_SESSION" allow-rename off
+  tmux set-option -t "$CSPACE_SESSION" set-titles off
+
+  _tag_pane "$CSPACE_SESSION:0.0" "terminal"
+
+  echo "Session '$CSPACE_SESSION' created. Use 'claudespace add <name>' to add worktree columns."
+  tmux attach-session -t "$CSPACE_SESSION"
+}
+
+cmd_add() {
+  if [[ -z "${1:-}" ]]; then
+    echo "Usage: claudespace add <name> [base-branch]"
+    local hidden
+    hidden=$(_list_hidden_worktrees)
+    if [[ -n "$hidden" ]]; then
+      echo ""
+      echo "Hidden worktrees (can re-add):"
+      echo "$hidden" | sed 's/^/  /'
+    fi
+    exit 1
+  fi
+  local name="$1"
+  local base="${2:-HEAD}"
+
+  if ! session_exists; then
+    echo "No session found. Run 'claudespace init' first." >&2
+    exit 1
+  fi
+
+  local main_root
+  main_root=$(main_repo_root)
+
+  local wt_path
+  wt_path=$(worktree_path "$name")
+
+  # Create the git worktree if it doesn't exist
+  if [[ ! -d "$wt_path" ]]; then
+    echo "Creating worktree: $wt_path (branch: $name from $base)"
+    git -C "$main_root" worktree add "$wt_path" -b "$name" "$base" 2>/dev/null || \
+    git -C "$main_root" worktree add "$wt_path" "$name" || {
+      echo "Error: failed to create worktree" >&2
+      exit 1
+    }
+
+    # Copy gitignored files listed in .worktreeinclude (matches Desktop behavior)
+    copy_worktreeinclude "$main_root" "$wt_path"
+  fi
+
+  local current_cols
+  current_cols=$(column_count)
+
+  if [[ "$current_cols" -eq 0 ]]; then
+    # First column: look for the terminal pane from init to repurpose
+    local term_pane
+    term_pane=$(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
+      | { grep ':terminal$' || true; } | head -1 | cut -d: -f1)
+
+    if [[ -n "$term_pane" ]]; then
+      # Repurpose the existing terminal pane as the claude pane
+      _tag_pane "$term_pane" "claude:${name}"
+      tmux send-keys -t "$term_pane" "cd '$wt_path' && claude" C-m
+
+      # Split to create shell pane below
+      local shell_pane
+      shell_pane=$(tmux split-window -t "$term_pane" -v -p 30 \
+        -c "$wt_path" -P -F '#{pane_id}')
+      _tag_pane "$shell_pane" "shell:${name}"
+    else
+      # Fallback: split from the first pane
+      local first_pane
+      first_pane=$(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}' | head -1)
+
+      _tag_pane "$first_pane" "claude:${name}"
+      tmux send-keys -t "$first_pane" "cd '$wt_path' && claude" C-m
+
+      local shell_pane
+      shell_pane=$(tmux split-window -t "$first_pane" -v -p 30 \
+        -c "$wt_path" -P -F '#{pane_id}')
+      _tag_pane "$shell_pane" "shell:${name}"
+    fi
+  else
+    # To create proper columns we must restructure the pane tree:
+    #   1. Break all shell panes out to temporary windows
+    #   2. With only claude panes left (flat horizontal row), split for new column
+    #   3. Rejoin each shell pane below its claude pane
+    #   4. Add shell pane for the new column
+
+    local last_claude
+    last_claude=$(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
+      | { grep ':claude:' || true; } | tail -1 | cut -d: -f1)
+
+    if [[ -z "$last_claude" ]]; then
+      echo "Error: could not find existing claude pane" >&2
+      exit 1
+    fi
+
+    # Collect shell pane IDs and their worktree names
+    local -a shell_pids=() shell_names=()
+    while IFS= read -r entry; do
+      shell_pids+=("${entry%%:*}")
+      shell_names+=("${entry##*shell:}")
+    done < <(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
+      | { grep ':shell:' || true; })
+
+    # 1. Break out all shell panes (pane IDs are preserved across windows)
+    for sp in "${shell_pids[@]}"; do
+      tmux break-pane -d -s "$sp"
+    done
+
+    # 2. Window now has only claude panes in a flat horizontal row — split for new column
+    local new_claude
+    new_claude=$(tmux split-window -t "$last_claude" -h \
+      -c "$wt_path" -P -F '#{pane_id}')
+    _tag_pane "$new_claude" "claude:${name}"
+    tmux send-keys -t "$new_claude" "cd '$wt_path' && claude" C-m
+
+    # 3. Rejoin each shell pane below its corresponding claude pane
+    for i in "${!shell_pids[@]}"; do
+      local cp
+      cp=$(find_claude_pane "${shell_names[$i]}")
+      if [[ -n "$cp" ]]; then
+        tmux join-pane -v -l 30% -s "${shell_pids[$i]}" -t "$cp"
+      fi
+    done
+
+    # 4. Add shell pane for the new column
+    local new_shell
+    new_shell=$(tmux split-window -t "$new_claude" -v -p 30 \
+      -c "$wt_path" -P -F '#{pane_id}')
+    _tag_pane "$new_shell" "shell:${name}"
+
+    # Rebalance columns evenly
+    _rebalance_layout
+  fi
+
+  echo "Added worktree column '$name' at $wt_path"
+}
+
+_rebalance_layout() {
+  local num_cols
+  num_cols=$(column_count)
+
+  if [[ "$num_cols" -gt 1 ]]; then
+    local working_width target_w
+    working_width=$(tmux display-message -t "$CSPACE_SESSION:0" -p '#{window_width}')
+    target_w=$(( working_width / num_cols ))
+    # Resize each claude pane to target width
+    tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
+      | { grep ':claude:' || true; } | cut -d: -f1 | while read -r pid; do
+        tmux resize-pane -t "$pid" -x "$target_w" 2>/dev/null || true
+      done
+  fi
+}
+
+cmd_hide() {
+  if [[ -z "${1:-}" ]]; then
+    echo "Usage: claudespace hide <name>"
+    if session_exists; then
+      local active
+      active=$(_list_active_worktrees)
+      if [[ -n "$active" ]]; then
+        echo ""
+        echo "Active worktrees:"
+        echo "$active" | sed 's/^/  /'
+      fi
+    fi
+    exit 1
+  fi
+  local name="$1"
+
+  if ! session_exists; then
+    echo "No session found." >&2
+    exit 1
+  fi
+
+  # Kill the panes
+  local claude_pane shell_pane
+  claude_pane=$(find_claude_pane "$name")
+  shell_pane=$(find_shell_pane "$name")
+
+  if [[ -n "$shell_pane" ]]; then
+    echo "Killing shell pane ($shell_pane) for '$name'"
+    tmux kill-pane -t "$shell_pane" 2>/dev/null || true
+  else
+    echo "No shell pane found for '$name'"
+  fi
+  if [[ -n "$claude_pane" ]]; then
+    echo "Killing claude pane ($claude_pane) for '$name'"
+    tmux kill-pane -t "$claude_pane" 2>/dev/null || true
+  else
+    echo "No claude pane found for '$name'"
+  fi
+
+  # Rebalance remaining columns
+  if session_exists; then
+    _rebalance_layout 2>/dev/null || true
+  fi
+
+  echo "Hidden '$name'. Worktree kept at $(worktree_path "$name")"
+}
+
+cmd_delete() {
+  if [[ -z "${1:-}" ]]; then
+    echo "Usage: claudespace delete <name>"
+    local all
+    all=$(_list_all_worktrees)
+    if [[ -n "$all" ]]; then
+      echo ""
+      echo "Worktrees:"
+      echo "$all" | sed 's/^/  /'
+    fi
+    exit 1
+  fi
+  local name="$1"
+
+  local wt_path
+  wt_path=$(worktree_path "$name")
+
+  read -rp "Delete worktree, branch, and panes for '$name'? [y/N] " confirm
+  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    echo "Cancelled."
+    return
+  fi
+
+  # Kill tmux panes if session exists
+  if session_exists; then
+    local claude_pane shell_pane
+    claude_pane=$(find_claude_pane "$name")
+    shell_pane=$(find_shell_pane "$name")
+
+    if [[ -n "$shell_pane" ]]; then
+      echo "Killing shell pane ($shell_pane) for '$name'"
+      tmux kill-pane -t "$shell_pane" 2>/dev/null || true
+    else
+      echo "No shell pane found for '$name'"
+    fi
+    if [[ -n "$claude_pane" ]]; then
+      echo "Killing claude pane ($claude_pane) for '$name'"
+      tmux kill-pane -t "$claude_pane" 2>/dev/null || true
+    else
+      echo "No claude pane found for '$name'"
+    fi
+
+    # Rebalance remaining columns
+    if session_exists; then
+      _rebalance_layout 2>/dev/null || true
+    fi
+  fi
+
+  # Remove the worktree
+  if [[ -d "$wt_path" ]]; then
+    git worktree remove "$wt_path" --force 2>/dev/null || true
+    echo "Worktree removed: $wt_path"
+  else
+    echo "No worktree found at $wt_path"
+  fi
+
+  # Delete the branch
+  git branch -D "$name" 2>/dev/null && echo "Branch '$name' deleted." || echo "No branch '$name' found."
+
+  echo "Delete complete for '$name'."
+}
+
+cmd_list() {
+  if ! session_exists; then
+    echo "No session found." >&2
+    exit 1
+  fi
+
+  echo "Active worktree columns in '$CSPACE_SESSION':"
+  echo
+  tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}  #{@cspace}  #{pane_current_path}  #{pane_current_command}' \
+    | { grep -v 'terminal' || true; } \
+    | while IFS='  ' read -r id role path cmd; do
+        echo "  $role  ($path)  [$cmd]"
+      done
+  echo
+  echo "Columns: $(column_count)"
+}
+
+cmd_attach() {
+  if ! session_exists; then
+    echo "No session found. Run 'claudespace init' first." >&2
+    exit 1
+  fi
+  tmux attach-session -t "$CSPACE_SESSION"
+}
+
+cmd_kill() {
+  if ! session_exists; then
+    echo "No session found." >&2
+    exit 1
+  fi
+  tmux kill-session -t "$CSPACE_SESSION"
+  echo "Session '$CSPACE_SESSION' killed."
+}
+
+# Internal: output completion words for a subcommand
+_cmd_complete() {
+  local subcmd="${1:-}"
+  case "$subcmd" in
+    add)     _list_hidden_worktrees ;;
+    hide)    _list_active_worktrees ;;
+    delete)  _list_all_worktrees ;;
+  esac
+}
+
+cmd_completions() {
+  cat <<'COMP'
+_claudespace() {
+  local cur prev
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+  if [[ $COMP_CWORD -eq 1 ]]; then
+    COMPREPLY=($(compgen -W "init add hide delete list attach kill help completions" -- "$cur"))
+    return
+  fi
+
+  case "$prev" in
+    add|hide|delete)
+      local names
+      names=$(claudespace _complete "$prev" 2>/dev/null)
+      COMPREPLY=($(compgen -W "$names" -- "$cur"))
+      ;;
+  esac
+}
+complete -F _claudespace claudespace
+COMP
+}
+
+# --- Main ---
+
+case "${1:-help}" in
+  init)         cmd_init ;;
+  add)          shift; cmd_add "$@" ;;
+  hide)         shift; cmd_hide "$@" ;;
+  delete)       shift; cmd_delete "$@" ;;
+  list)         cmd_list ;;
+  attach)       cmd_attach ;;
+  kill)         cmd_kill ;;
+  completions)  cmd_completions ;;
+  _complete)    shift; _cmd_complete "$@" ;;
+  help|*)
+    cat <<EOF
+claudespace — single-window tmux workspace for Claude Code worktrees
+
+Usage:
+  claudespace init                  Create session and attach
+  claudespace add <name> [branch]   Add a worktree column (claude + shell)
+  claudespace hide <name>           Hide column (kill panes, keep worktree)
+  claudespace delete <name>         Delete column, worktree, and branch (prompts y/N)
+  claudespace list                  List active worktree columns
+  claudespace attach                Attach to the session
+  claudespace kill                  Kill the tmux session
+  claudespace completions           Output bash completion script
+
+Tab completion:
+  Add to your ~/.bashrc or ~/.zshrc:
+    eval "\$(claudespace completions)"
+
+Environment:
+  CSPACE_SESSION    Session name      (default: claudespace)
+  CSPACE_WT_DIR     Worktree parent   (default: ~/.claude-worktrees/<repo>)
+EOF
+    ;;
+esac
