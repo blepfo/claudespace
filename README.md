@@ -31,6 +31,20 @@ curl -o ~/.local/bin/claudespace https://raw.githubusercontent.com/blepfo/claude
 chmod +x ~/.local/bin/claudespace
 ```
 
+### tmux config (optional)
+
+Copy the recommended tmux config for claudespace (mouse support, vi-mode, larger scrollback, active pane highlighting):
+
+```bash
+cp "$(dirname "$(which claudespace)")/../.tmux.conf" ~/.tmux.conf
+```
+
+Or directly from the repo:
+
+```bash
+curl -o ~/.tmux.conf https://raw.githubusercontent.com/blepfo/claudespace/main/.tmux.conf
+```
+
 ### Tab completion
 
 Add to your `~/.bashrc` or `~/.zshrc`:
