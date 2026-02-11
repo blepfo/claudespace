@@ -84,7 +84,7 @@ copy_worktreeinclude() {
         fi
         echo "  Copied: $rel"
       fi
-    done < <(cd "$src_root" && find . -path "./.git" -prune -o -name "$(basename "$pattern")" -print0 2>/dev/null \
+    done < <(cd "$src_root" && find . -path "./.git" -prune -o -path "*/node_modules" -prune -o -name "$(basename "$pattern")" -print0 2>/dev/null \
       | sed "s|^\./|$src_root/|" | tr '\n' '\0')
 
     # Also try glob expansion directly for simple patterns like .env, .env.local
@@ -320,7 +320,15 @@ cmd_add() {
       -c "$wt_path" -P -F '#{pane_id}')
     _tag_pane "$new_shell" "shell:${name}"
 
-    _rebalance_layout
+    # Preserve shrunk columns when rebalancing
+    local has_shrunk
+    has_shrunk=$(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{@cspace_shrunk}' \
+      | { grep -c '^1$' || true; })
+    if [[ "$has_shrunk" -gt 0 ]]; then
+      _rebalance_nonshrunk
+    else
+      _rebalance_layout
+    fi
   fi
 
   echo "Added worktree column '$name' at $wt_path"
@@ -448,7 +456,7 @@ cmd_hide() {
   for pid in "${col_pane_ids[@]}"; do
     kill_cmds+="tmux kill-pane -t $pid; "
   done
-  kill_cmds+="claudespace balance; "
+  kill_cmds+="claudespace _rebalance; "
   kill_cmds+="} >/dev/null 2>&1"
 
   tmux run-shell -b "$kill_cmds"
@@ -840,6 +848,21 @@ cmd_deploy() {
   echo "Done. '$target' pushed to origin."
 }
 
+# Internal: shrunk-aware rebalance (preserves shrunk columns)
+cmd__rebalance() {
+  if ! session_exists; then
+    return
+  fi
+  local has_shrunk
+  has_shrunk=$(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{@cspace_shrunk}' \
+    | { grep -c '^1$' || true; })
+  if [[ "$has_shrunk" -gt 0 ]]; then
+    _rebalance_nonshrunk
+  else
+    _rebalance_layout
+  fi
+}
+
 # Internal: output completion words for a subcommand
 _cmd_complete() {
   local subcmd="${1:-}"
@@ -892,6 +915,7 @@ case "${1:-help}" in
   attach)       cmd_attach ;;
   kill)         cmd_kill ;;
   completions)  cmd_completions ;;
+  _rebalance)   cmd__rebalance ;;
   _complete)    shift; _cmd_complete "$@" ;;
   help|*)
     cat <<EOF
