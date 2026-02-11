@@ -20,6 +20,7 @@ set -euo pipefail
 #   claudespace move <left|right>     — Move current column left/right (wraps around)
 #   claudespace rename <name>         — Rename current column's panes
 #   claudespace shrink                — Shrink current column to title width
+#   claudespace grow                  — Unshrink current column back to normal width
 #   claudespace list                  — List active worktree columns
 #   claudespace attach                — Attach to the session
 #
@@ -630,6 +631,45 @@ cmd_shrink() {
   echo "Shrunk column to ${min_width} chars wide."
 }
 
+cmd_grow() {
+  if ! session_exists; then
+    echo "No session found." >&2
+    exit 1
+  fi
+
+  local current_pane
+  current_pane="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}')}"
+
+  local current_x
+  current_x=$(tmux display-message -t "$current_pane" -p '#{pane_left}')
+
+  # Find the claude pane in the current column (by matching x position)
+  local claude_pane="" is_shrunk=""
+  while IFS='|' read -r pid px tag shrunk; do
+    if [[ "$px" == "$current_x" && "$tag" == claude:* ]]; then
+      claude_pane="$pid"
+      is_shrunk="$shrunk"
+      break
+    fi
+  done < <(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}|#{pane_left}|#{@cspace}|#{@cspace_shrunk}')
+
+  if [[ -z "$claude_pane" ]]; then
+    echo "Error: no claude pane found in current column." >&2
+    exit 1
+  fi
+
+  if [[ "$is_shrunk" != "1" ]]; then
+    echo "Column is not shrunk."
+    return
+  fi
+
+  # Clear shrunk tag and rebalance
+  tmux set-option -pu -t "$claude_pane" @cspace_shrunk 2>/dev/null || true
+  _rebalance_nonshrunk
+
+  echo "Grew column back to normal width."
+}
+
 cmd_move() {
   local direction="${1:-}"
   if [[ "$direction" != "left" && "$direction" != "right" ]]; then
@@ -880,7 +920,7 @@ _claudespace() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
-    COMPREPLY=($(compgen -W "init add hide delete move rename deploy shrink balance list attach kill help completions" -- "$cur"))
+    COMPREPLY=($(compgen -W "init add hide delete move rename deploy shrink grow balance list attach kill help completions" -- "$cur"))
     return
   fi
 
@@ -910,6 +950,7 @@ case "${1:-help}" in
   rename)       shift; cmd_rename "$@" ;;
   deploy)       shift; cmd_deploy "$@" ;;
   shrink)       cmd_shrink ;;
+  grow)         cmd_grow ;;
   balance)      cmd_balance ;;
   list)         cmd_list ;;
   attach)       cmd_attach ;;
@@ -931,7 +972,8 @@ Usage:
   claudespace rename <name>           Rename current column's panes (claude:<name> + shell:<name>)
   claudespace deploy <target-branch>  Rebase current worktree onto branch and fast-forward merge
   claudespace shrink                Shrink current column to title width
-  claudespace balance               Resize panes to equal grid size (unshrink)
+  claudespace grow                  Unshrink current column back to normal width
+  claudespace balance               Resize panes to equal grid size (unshrink all)
   claudespace list                  List active worktree columns
   claudespace attach                Attach to the session
   claudespace kill                  Kill the tmux session
