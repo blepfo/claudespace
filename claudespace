@@ -321,53 +321,24 @@ cmd_add() {
       -c "$wt_path" -P -F '#{pane_id}')
     _tag_pane "$new_shell" "shell:${name}"
 
-    # Preserve shrunk columns when rebalancing
-    local has_shrunk
-    has_shrunk=$(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{@cspace_shrunk}' \
-      | { grep -c '^1$' || true; })
-    if [[ "$has_shrunk" -gt 0 ]]; then
-      _rebalance_nonshrunk
-    else
-      _rebalance_layout
-    fi
+    _rebalance
   fi
 
   echo "Added worktree column '$name' at $wt_path"
 }
 
-_rebalance_layout() {
+# Rebalance all columns: shrunk columns get CSPACE_SHRINK_WIDTH,
+# non-shrunk columns equally divide the remaining space.
+# Also balances row heights (shell panes get 30%).
+_rebalance() {
   local num_cols
   num_cols=$(column_count)
+  [[ "$num_cols" -ge 1 ]] || return
 
-  if [[ "$num_cols" -ge 1 ]]; then
-    # Balance column widths
-    if [[ "$num_cols" -gt 1 ]]; then
-      local working_width target_w
-      working_width=$(tmux display-message -t "$CSPACE_SESSION:0" -p '#{window_width}')
-      target_w=$(( working_width / num_cols ))
-      tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
-        | { grep ':claude:' || true; } | cut -d: -f1 | while read -r pid; do
-          tmux resize-pane -t "$pid" -x "$target_w" 2>/dev/null || true
-        done
-    fi
-
-    # Balance row heights — give each shell pane 30% of the window height
-    local working_height target_shell_h
-    working_height=$(tmux display-message -t "$CSPACE_SESSION:0" -p '#{window_height}')
-    target_shell_h=$(( working_height * 30 / 100 ))
-    tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
-      | { grep ':shell:' || true; } | cut -d: -f1 | while read -r pid; do
-        tmux resize-pane -t "$pid" -y "$target_shell_h" 2>/dev/null || true
-      done
-  fi
-}
-
-# Rebalance only non-shrunk columns to fill remaining space
-_rebalance_nonshrunk() {
   local working_width
   working_width=$(tmux display-message -t "$CSPACE_SESSION:0" -p '#{window_width}')
 
-  # Re-apply correct min width to all shrunk columns, then distribute the rest
+  # Re-apply shrink width to shrunk columns, collect non-shrunk ones
   local shrunk_width=0 nonshrunk_count=0
   local -a nonshrunk_panes=()
   while IFS='|' read -r pid tag shrunk _; do
@@ -383,9 +354,6 @@ _rebalance_nonshrunk() {
     -F '#{pane_id}|#{@cspace}|#{@cspace_shrunk}|#{pane_width}')
 
   if [[ "$nonshrunk_count" -gt 0 ]]; then
-    # Account for column separators (1 char each between columns)
-    local num_cols
-    num_cols=$(column_count)
     local separators=$(( num_cols - 1 ))
     local available=$(( working_width - shrunk_width - separators ))
     local target_w=$(( available / nonshrunk_count ))
@@ -393,6 +361,15 @@ _rebalance_nonshrunk() {
       tmux resize-pane -t "$pid" -x "$target_w" 2>/dev/null || true
     done
   fi
+
+  # Balance row heights — give each shell pane 30% of the window height
+  local working_height target_shell_h
+  working_height=$(tmux display-message -t "$CSPACE_SESSION:0" -p '#{window_height}')
+  target_shell_h=$(( working_height * 30 / 100 ))
+  tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
+    | { grep ':shell:' || true; } | cut -d: -f1 | while read -r pid; do
+      tmux resize-pane -t "$pid" -y "$target_shell_h" 2>/dev/null || true
+    done
 }
 
 cmd_hide() {
@@ -514,7 +491,7 @@ cmd_delete() {
 
     # Rebalance remaining columns
     if session_exists; then
-      _rebalance_layout 2>/dev/null || true
+      _rebalance 2>/dev/null || true
     fi
   fi
 }
@@ -567,29 +544,13 @@ cmd_balance() {
     return
   fi
 
-  # Clear shrunk tags on all claude panes
+  # Clear shrunk tags on all claude panes, then rebalance equally
   tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
     | { grep ':claude:' || true; } | cut -d: -f1 | while read -r pid; do
       tmux set-option -pu -t "$pid" @cspace_shrunk 2>/dev/null || true
     done
 
-  # Balance column widths
-  local working_width target_w
-  working_width=$(tmux display-message -t "$CSPACE_SESSION:0" -p '#{window_width}')
-  target_w=$(( working_width / num_cols ))
-  tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
-    | { grep ':claude:' || true; } | cut -d: -f1 | while read -r pid; do
-      tmux resize-pane -t "$pid" -x "$target_w" 2>/dev/null || true
-    done
-
-  # Balance row heights — give each shell pane 30% of the window height
-  local working_height target_shell_h
-  working_height=$(tmux display-message -t "$CSPACE_SESSION:0" -p '#{window_height}')
-  target_shell_h=$(( working_height * 30 / 100 ))
-  tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
-    | { grep ':shell:' || true; } | cut -d: -f1 | while read -r pid; do
-      tmux resize-pane -t "$pid" -y "$target_shell_h" 2>/dev/null || true
-    done
+  _rebalance
 
   echo "Balanced $num_cols column(s)."
 }
@@ -626,7 +587,7 @@ cmd_shrink() {
   tmux set-option -p -t "$claude_pane" @cspace_shrunk 1
 
   # Rebalance non-shrunk columns to fill the freed space
-  _rebalance_nonshrunk
+  _rebalance
 
   echo "Shrunk column to ${min_width} chars wide."
 }
@@ -665,7 +626,7 @@ cmd_grow() {
 
   # Clear shrunk tag and rebalance
   tmux set-option -pu -t "$claude_pane" @cspace_shrunk 2>/dev/null || true
-  _rebalance_nonshrunk
+  _rebalance
 
   echo "Grew column back to normal width."
 }
@@ -747,15 +708,7 @@ cmd_move() {
     tmux swap-pane -s "${src_panes[$i]}" -t "${tgt_panes[$i]}"
   done
 
-  # Use nonshrunk rebalance to preserve shrunk column widths
-  local has_shrunk
-  has_shrunk=$(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{@cspace_shrunk}' \
-    | { grep -c '^1$' || true; })
-  if [[ "$has_shrunk" -gt 0 ]]; then
-    _rebalance_nonshrunk
-  else
-    _rebalance_layout
-  fi
+  _rebalance
 
   # Keep focus on the pane the user ran the command from
   tmux select-pane -t "$current_pane"
@@ -888,19 +841,12 @@ cmd_deploy() {
   echo "Done. '$target' pushed to origin."
 }
 
-# Internal: shrunk-aware rebalance (preserves shrunk columns)
+# Internal: rebalance entry point for tmux run-shell
 cmd__rebalance() {
   if ! session_exists; then
     return
   fi
-  local has_shrunk
-  has_shrunk=$(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{@cspace_shrunk}' \
-    | { grep -c '^1$' || true; })
-  if [[ "$has_shrunk" -gt 0 ]]; then
-    _rebalance_nonshrunk
-  else
-    _rebalance_layout
-  fi
+  _rebalance
 }
 
 # Internal: output completion words for a subcommand
