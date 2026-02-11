@@ -19,6 +19,7 @@ set -euo pipefail
 #   claudespace delete <name>         — Delete worktree column, worktree, and branch
 #   claudespace move <left|right>     — Move current column left/right (wraps around)
 #   claudespace rename <name>         — Rename current column's panes
+#   claudespace shrink                — Shrink current column to title width
 #   claudespace list                  — List active worktree columns
 #   claudespace attach                — Attach to the session
 #
@@ -29,6 +30,7 @@ set -euo pipefail
 #   CSPACE_WT_DIR     — worktree parent directory   (default: ../<repo>__worktrees)
 
 CSPACE_SESSION="${CSPACE_SESSION:-claudespace}"
+CSPACE_SHRINK_WIDTH=32
 
 # --- Helpers ---
 
@@ -351,6 +353,39 @@ _rebalance_layout() {
   fi
 }
 
+# Rebalance only non-shrunk columns to fill remaining space
+_rebalance_nonshrunk() {
+  local working_width
+  working_width=$(tmux display-message -t "$CSPACE_SESSION:0" -p '#{window_width}')
+
+  # Re-apply correct min width to all shrunk columns, then distribute the rest
+  local shrunk_width=0 nonshrunk_count=0
+  local -a nonshrunk_panes=()
+  while IFS='|' read -r pid tag shrunk _; do
+    [[ "$tag" == claude:* ]] || continue
+    if [[ "$shrunk" == "1" ]]; then
+      tmux resize-pane -t "$pid" -x "$CSPACE_SHRINK_WIDTH" 2>/dev/null || true
+      shrunk_width=$(( shrunk_width + CSPACE_SHRINK_WIDTH ))
+    else
+      nonshrunk_panes+=("$pid")
+      nonshrunk_count=$(( nonshrunk_count + 1 ))
+    fi
+  done < <(tmux list-panes -t "$CSPACE_SESSION:0" \
+    -F '#{pane_id}|#{@cspace}|#{@cspace_shrunk}|#{pane_width}')
+
+  if [[ "$nonshrunk_count" -gt 0 ]]; then
+    # Account for column separators (1 char each between columns)
+    local num_cols
+    num_cols=$(column_count)
+    local separators=$(( num_cols - 1 ))
+    local available=$(( working_width - shrunk_width - separators ))
+    local target_w=$(( available / nonshrunk_count ))
+    for pid in "${nonshrunk_panes[@]}"; do
+      tmux resize-pane -t "$pid" -x "$target_w" 2>/dev/null || true
+    done
+  fi
+}
+
 cmd_hide() {
   if ! session_exists; then
     echo "No session found." >&2
@@ -523,6 +558,12 @@ cmd_balance() {
     return
   fi
 
+  # Clear shrunk tags on all claude panes
+  tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
+    | { grep ':claude:' || true; } | cut -d: -f1 | while read -r pid; do
+      tmux set-option -pu -t "$pid" @cspace_shrunk 2>/dev/null || true
+    done
+
   # Balance column widths
   local working_width target_w
   working_width=$(tmux display-message -t "$CSPACE_SESSION:0" -p '#{window_width}')
@@ -542,6 +583,43 @@ cmd_balance() {
     done
 
   echo "Balanced $num_cols column(s)."
+}
+
+cmd_shrink() {
+  if ! session_exists; then
+    echo "No session found." >&2
+    exit 1
+  fi
+
+  local current_pane
+  current_pane="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}')}"
+
+  local current_x
+  current_x=$(tmux display-message -t "$current_pane" -p '#{pane_left}')
+
+  # Find the claude pane in the current column (by matching x position)
+  local claude_pane=""
+  while IFS='|' read -r pid px tag; do
+    if [[ "$px" == "$current_x" && "$tag" == claude:* ]]; then
+      claude_pane="$pid"
+      break
+    fi
+  done < <(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}|#{pane_left}|#{@cspace}')
+
+  if [[ -z "$claude_pane" ]]; then
+    echo "Error: no claude pane found in current column." >&2
+    exit 1
+  fi
+
+  local min_width=$CSPACE_SHRINK_WIDTH
+
+  tmux resize-pane -t "$claude_pane" -x "$min_width" 2>/dev/null || true
+  tmux set-option -p -t "$claude_pane" @cspace_shrunk 1
+
+  # Rebalance non-shrunk columns to fill the freed space
+  _rebalance_nonshrunk
+
+  echo "Shrunk column to ${min_width} chars wide."
 }
 
 cmd_move() {
@@ -621,7 +699,15 @@ cmd_move() {
     tmux swap-pane -s "${src_panes[$i]}" -t "${tgt_panes[$i]}"
   done
 
-  _rebalance_layout
+  # Use nonshrunk rebalance to preserve shrunk column widths
+  local has_shrunk
+  has_shrunk=$(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{@cspace_shrunk}' \
+    | { grep -c '^1$' || true; })
+  if [[ "$has_shrunk" -gt 0 ]]; then
+    _rebalance_nonshrunk
+  else
+    _rebalance_layout
+  fi
 
   # Keep focus on the pane the user ran the command from
   tmux select-pane -t "$current_pane"
@@ -771,7 +857,7 @@ _claudespace() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
-    COMPREPLY=($(compgen -W "init add hide delete move rename deploy balance list attach kill help completions" -- "$cur"))
+    COMPREPLY=($(compgen -W "init add hide delete move rename deploy shrink balance list attach kill help completions" -- "$cur"))
     return
   fi
 
@@ -800,6 +886,7 @@ case "${1:-help}" in
   move)          shift; cmd_move "$@" ;;
   rename)       shift; cmd_rename "$@" ;;
   deploy)       shift; cmd_deploy "$@" ;;
+  shrink)       cmd_shrink ;;
   balance)      cmd_balance ;;
   list)         cmd_list ;;
   attach)       cmd_attach ;;
@@ -819,7 +906,8 @@ Usage:
   claudespace move <left|right>        Move current column left/right (wraps around)
   claudespace rename <name>           Rename current column's panes (claude:<name> + shell:<name>)
   claudespace deploy <target-branch>  Rebase current worktree onto branch and fast-forward merge
-  claudespace balance               Resize panes to equal grid size
+  claudespace shrink                Shrink current column to title width
+  claudespace balance               Resize panes to equal grid size (unshrink)
   claudespace list                  List active worktree columns
   claudespace attach                Attach to the session
   claudespace kill                  Kill the tmux session
