@@ -338,29 +338,46 @@ _rebalance() {
   local working_width
   working_width=$(tmux display-message -t "$CSPACE_SESSION:0" -p '#{window_width}')
 
-  # Re-apply shrink width to shrunk columns, collect non-shrunk ones
-  local shrunk_width=0 nonshrunk_count=0
-  local -a nonshrunk_panes=()
-  while IFS='|' read -r pid tag shrunk _; do
+  # Collect all claude panes sorted left-to-right by x position
+  local -a pane_ids=() pane_shrunk=()
+  while IFS='|' read -r pid _px tag shrunk; do
     [[ "$tag" == claude:* ]] || continue
-    if [[ "$shrunk" == "1" ]]; then
-      tmux resize-pane -t "$pid" -x "$CSPACE_SHRINK_WIDTH" 2>/dev/null || true
+    pane_ids+=("$pid")
+    pane_shrunk+=("$shrunk")
+  done < <(tmux list-panes -t "$CSPACE_SESSION:0" \
+    -F '#{pane_id}|#{pane_left}|#{@cspace}|#{@cspace_shrunk}' | sort -t'|' -k2 -n)
+
+  # Calculate target width for non-shrunk columns
+  local shrunk_width=0 nonshrunk_count=0
+  for i in "${!pane_ids[@]}"; do
+    if [[ "${pane_shrunk[$i]}" == "1" ]]; then
       shrunk_width=$(( shrunk_width + CSPACE_SHRINK_WIDTH ))
     else
-      nonshrunk_panes+=("$pid")
       nonshrunk_count=$(( nonshrunk_count + 1 ))
     fi
-  done < <(tmux list-panes -t "$CSPACE_SESSION:0" \
-    -F '#{pane_id}|#{@cspace}|#{@cspace_shrunk}|#{pane_width}')
+  done
 
+  local target_nonshrunk=0
   if [[ "$nonshrunk_count" -gt 0 ]]; then
     local separators=$(( num_cols - 1 ))
     local available=$(( working_width - shrunk_width - separators ))
-    local target_w=$(( available / nonshrunk_count ))
-    for pid in "${nonshrunk_panes[@]}"; do
-      tmux resize-pane -t "$pid" -x "$target_w" 2>/dev/null || true
-    done
+    target_nonshrunk=$(( available / nonshrunk_count ))
   fi
+
+  # Resize all columns except the last from left to right.
+  # Each resize adjusts the right neighbor, so going left-to-right
+  # and skipping the last (which absorbs rounding) avoids cascading errors.
+  local last=$(( ${#pane_ids[@]} - 1 ))
+  for i in "${!pane_ids[@]}"; do
+    [[ $i -eq $last ]] && break
+    local target_w
+    if [[ "${pane_shrunk[$i]}" == "1" ]]; then
+      target_w=$CSPACE_SHRINK_WIDTH
+    else
+      target_w=$target_nonshrunk
+    fi
+    tmux resize-pane -t "${pane_ids[$i]}" -x "$target_w" 2>/dev/null || true
+  done
 
   # Balance row heights — give each shell pane 30% of the window height
   local working_height target_shell_h
