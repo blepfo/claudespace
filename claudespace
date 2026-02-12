@@ -19,6 +19,7 @@ set -euo pipefail
 #   claudespace delete <name>         — Delete worktree column, worktree, and branch
 #   claudespace move <left|right>     — Move current column left/right (wraps around)
 #   claudespace rename <name>         — Rename current column's panes
+#   claudespace balance               — Rebuild column grid (pairs claude+shell, orphans on right)
 #   claudespace shrink                — Shrink current column to title width
 #   claudespace grow                  — Unshrink current column back to normal width
 #   claudespace list                  — List active worktree columns
@@ -532,23 +533,159 @@ cmd_balance() {
     exit 1
   fi
 
-  local num_cols
-  num_cols=$(column_count)
+  # --- Collect all panes in window 0 and categorize by @cspace tag ---
+  # Using parallel arrays (bash 3.2 compatible — no associative arrays)
+  local -a claude_names=() claude_pids=()
+  local -a shell_names=() shell_pids=()
+  local -a other_pids=()
+  while IFS='|' read -r pid tag; do
+    case "$tag" in
+      claude:*)
+        claude_names+=("${tag#claude:}")
+        claude_pids+=("$pid")
+        ;;
+      shell:*)
+        shell_names+=("${tag#shell:}")
+        shell_pids+=("$pid")
+        ;;
+      *)
+        other_pids+=("$pid")
+        ;;
+    esac
+  done < <(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}|#{@cspace}')
 
-  if [[ "$num_cols" -eq 0 ]]; then
-    echo "No worktree columns to balance."
+  # --- Build paired columns (claude+shell with matching name) and orphan list ---
+  # paired_* arrays are index-aligned: paired_names[i] / paired_cpids[i] / paired_spids[i]
+  local -a paired_names=() paired_cpids=() paired_spids=()
+  local -a orphan_panes=()
+
+  local ci si
+  for ci in "${!claude_names[@]}"; do
+    local cname="${claude_names[$ci]}"
+    local matched_spid=""
+    for si in "${!shell_names[@]}"; do
+      if [[ "${shell_names[$si]}" == "$cname" ]]; then
+        matched_spid="${shell_pids[$si]}"
+        break
+      fi
+    done
+    if [[ -n "$matched_spid" ]]; then
+      paired_names+=("$cname")
+      paired_cpids+=("${claude_pids[$ci]}")
+      paired_spids+=("$matched_spid")
+    else
+      orphan_panes+=("${claude_pids[$ci]}")
+    fi
+  done
+
+  # Find orphan shell panes (no matching claude)
+  for si in "${!shell_names[@]}"; do
+    local sname="${shell_names[$si]}"
+    local has_claude=""
+    for ci in "${!claude_names[@]}"; do
+      if [[ "${claude_names[$ci]}" == "$sname" ]]; then
+        has_claude=1
+        break
+      fi
+    done
+    if [[ -z "$has_claude" ]]; then
+      orphan_panes+=("${shell_pids[$si]}")
+    fi
+  done
+  # Append other_pids to orphans (guard empty array for bash 3.2 + set -u)
+  if [[ ${#other_pids[@]} -gt 0 ]]; then
+    orphan_panes+=("${other_pids[@]}")
+  fi
+
+  local total_paired=${#paired_names[@]}
+  local total_orphans=${#orphan_panes[@]}
+  local total_panes=$(( total_paired * 2 + total_orphans ))
+
+  if [[ $total_panes -le 1 ]]; then
+    echo "Nothing to rebalance (only $total_panes pane)."
     return
   fi
 
-  # Clear shrunk tags on all claude panes, then rebalance equally
-  tmux list-panes -t "$CSPACE_SESSION:0" -F '#{pane_id}:#{@cspace}' \
-    | { grep ':claude:' || true; } | cut -d: -f1 | while read -r pid; do
-      tmux set-option -pu -t "$pid" @cspace_shrunk 2>/dev/null || true
+  # Sort paired columns by current x position to preserve left-to-right order
+  if [[ $total_paired -gt 1 ]]; then
+    local -a new_names=() new_cpids=() new_spids=()
+    while IFS='|' read -r _ idx; do
+      new_names+=("${paired_names[$idx]}")
+      new_cpids+=("${paired_cpids[$idx]}")
+      new_spids+=("${paired_spids[$idx]}")
+    done < <(
+      for i in "${!paired_names[@]}"; do
+        local px
+        px=$(tmux display-message -t "${paired_cpids[$i]}" -p '#{pane_left}' 2>/dev/null || echo "9999")
+        echo "${px}|${i}"
+      done | sort -t'|' -k1 -n
+    )
+    paired_names=("${new_names[@]}")
+    paired_cpids=("${new_cpids[@]}")
+    paired_spids=("${new_spids[@]}")
+  fi
+
+  # --- Choose anchor pane (first claude pane, or first orphan if no pairs) ---
+  local anchor_pane
+  if [[ $total_paired -gt 0 ]]; then
+    anchor_pane="${paired_cpids[0]}"
+  else
+    anchor_pane="${orphan_panes[0]}"
+  fi
+
+  # --- Break all non-anchor panes out to temporary windows ---
+  local -a break_panes=()
+  for i in "${!paired_names[@]}"; do
+    break_panes+=("${paired_cpids[$i]}" "${paired_spids[$i]}")
+  done
+  if [[ ${#orphan_panes[@]} -gt 0 ]]; then
+    break_panes+=("${orphan_panes[@]}")
+  fi
+
+  for pid in "${break_panes[@]}"; do
+    [[ "$pid" == "$anchor_pane" ]] && continue
+    tmux break-pane -d -s "$pid" 2>/dev/null || true
+  done
+
+  # --- Rebuild the grid: paired columns, then orphan column on right ---
+  if [[ $total_paired -gt 0 ]]; then
+    # First paired column: anchor (claude) is already in window 0, join shell below
+    tmux join-pane -v -s "${paired_spids[0]}" -t "$anchor_pane"
+
+    # Additional paired columns: join to the right as full-height columns
+    for (( i=1; i<total_paired; i++ )); do
+      tmux join-pane -fh -s "${paired_cpids[$i]}" -t "$anchor_pane"
+      tmux join-pane -v -s "${paired_spids[$i]}" -t "${paired_cpids[$i]}"
     done
+  fi
+
+  # Orphan column on the far right
+  if [[ $total_orphans -gt 0 ]]; then
+    local start=0
+    # If no paired columns, anchor is first orphan — already in window 0
+    [[ $total_paired -eq 0 ]] && start=1
+
+    for (( i=start; i<total_orphans; i++ )); do
+      if [[ $i -eq $start ]]; then
+        # First orphan in column: join as new column on the right
+        tmux join-pane -fh -s "${orphan_panes[$i]}" -t "$anchor_pane"
+      else
+        # Subsequent orphans: stack below the previous one
+        tmux join-pane -v -s "${orphan_panes[$i]}" -t "${orphan_panes[$((i-1))]}"
+      fi
+    done
+  fi
+
+  # --- Clear shrunk tags and rebalance sizes ---
+  for i in "${!paired_cpids[@]}"; do
+    tmux set-option -pu -t "${paired_cpids[$i]}" @cspace_shrunk 2>/dev/null || true
+  done
 
   _rebalance
 
-  echo "Balanced $num_cols column(s)."
+  local msg="Rebuilt grid: $total_paired paired column(s)"
+  [[ $total_orphans -gt 0 ]] && msg+=", $total_orphans orphan pane(s) on right"
+  echo "$msg."
 }
 
 cmd_shrink() {
@@ -915,7 +1052,7 @@ Usage:
   claudespace deploy <target-branch>  Rebase current worktree onto branch and fast-forward merge
   claudespace shrink                Shrink current column to title width
   claudespace grow                  Unshrink current column back to normal width
-  claudespace balance               Resize panes to equal grid size (unshrink all)
+  claudespace balance               Rebuild the column grid layout (pairs claude+shell, orphans on right)
   claudespace list                  List active worktree columns
   claudespace attach                Attach to the session
   claudespace kill                  Kill the tmux session
