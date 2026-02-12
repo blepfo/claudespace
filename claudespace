@@ -304,6 +304,16 @@ cmd_add() {
     _rebalance
   fi
 
+  # Notify Slack bridge of new session (background, fail-silent)
+  local _bridge_pane
+  _bridge_pane=$(find_claude_pane "$name")
+  if [[ -n "$_bridge_pane" ]]; then
+    curl -sf -X POST "http://localhost:${BRIDGE_PORT:-7890}/thread" \
+      -H 'Content-Type: application/json' \
+      -d "{\"pane_id\":\"${_bridge_pane}\",\"name\":\"${name}\"}" \
+      >/dev/null 2>&1 &
+  fi
+
   echo "Added worktree column '$name' at $wt_path"
 }
 
@@ -420,6 +430,19 @@ cmd_hide() {
     fi
   done
 
+  # Notify Slack bridge before killing panes (background, fail-silent)
+  for pid in "${col_pane_ids[@]}"; do
+    local _htag
+    _htag=$(tmux display-message -p -t "$pid" '#{@cspace}' 2>/dev/null || true)
+    if [[ "$_htag" =~ ^claude: ]]; then
+      curl -sf -X POST "http://localhost:${BRIDGE_PORT:-7890}/close" \
+        -H 'Content-Type: application/json' \
+        -d "{\"pane_id\":\"${pid}\",\"name\":\"${_htag#claude:}\"}" \
+        >/dev/null 2>&1 &
+      break
+    fi
+  done
+
   # Build a script to: focus neighbor, kill column panes, then rebalance.
   # Must run via tmux run-shell because this script is running inside one of
   # the panes being killed — killing it would terminate the script before
@@ -472,6 +495,18 @@ cmd_delete() {
   git branch -D "$name" 2>/dev/null && echo "Branch '$name' deleted." || echo "No branch '$name' found."
 
   echo "Delete complete for '$name'."
+
+  # Notify Slack bridge (background, fail-silent)
+  if session_exists; then
+    local _dpane
+    _dpane=$(find_claude_pane "$name")
+    if [[ -n "$_dpane" ]]; then
+      curl -sf -X POST "http://localhost:${BRIDGE_PORT:-7890}/close" \
+        -H 'Content-Type: application/json' \
+        -d "{\"pane_id\":\"${_dpane}\",\"name\":\"${name}\"}" \
+        >/dev/null 2>&1 &
+    fi
+  fi
 
   # Kill tmux panes last (may terminate this script if run from within a pane)
   if session_exists; then
@@ -981,6 +1016,58 @@ cmd_deploy() {
   echo "Done. '$target' pushed to origin."
 }
 
+cmd_slack() {
+  local action="${1:-start}"
+
+  if ! session_exists; then
+    echo "No session found. Run 'claudespace init' first." >&2
+    exit 1
+  fi
+
+  local script_dir
+  script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  local bridge_dir="$script_dir/claude-slack-bridge"
+
+  if [[ ! -d "$bridge_dir" ]]; then
+    echo "Error: bridge not found at $bridge_dir" >&2
+    exit 1
+  fi
+
+  local window_name="slack-bridge"
+
+  case "$action" in
+    start)
+      # Check if window already exists
+      if tmux list-windows -t "$CSPACE_SESSION" -F '#{window_name}' 2>/dev/null \
+          | grep -qx "$window_name"; then
+        echo "Slack bridge is already running. Use 'claudespace slack stop' to stop it."
+        return
+      fi
+
+      if [[ ! -d "$bridge_dir/node_modules" ]]; then
+        echo "Error: run 'npm install' in $bridge_dir first." >&2
+        exit 1
+      fi
+
+      tmux new-window -t "$CSPACE_SESSION" -n "$window_name" -c "$bridge_dir" "npm run dev"
+      echo "Slack bridge started in tmux window '$window_name'."
+      ;;
+    stop)
+      if tmux list-windows -t "$CSPACE_SESSION" -F '#{window_name}' 2>/dev/null \
+          | grep -qx "$window_name"; then
+        tmux kill-window -t "$CSPACE_SESSION:$window_name"
+        echo "Slack bridge stopped."
+      else
+        echo "Slack bridge is not running."
+      fi
+      ;;
+    *)
+      echo "Usage: claudespace slack [start|stop]"
+      exit 1
+      ;;
+  esac
+}
+
 # Internal: rebalance entry point for tmux run-shell
 cmd__rebalance() {
   if ! session_exists; then
@@ -1006,7 +1093,7 @@ _claudespace() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
-    COMPREPLY=($(compgen -W "init add hide delete move rename deploy shrink grow balance list attach kill help completions" -- "$cur"))
+    COMPREPLY=($(compgen -W "init add hide delete move rename deploy shrink grow balance list attach kill slack help completions" -- "$cur"))
     return
   fi
 
@@ -1018,6 +1105,9 @@ _claudespace() {
       ;;
     move)
       COMPREPLY=($(compgen -W "left right" -- "$cur"))
+      ;;
+    slack)
+      COMPREPLY=($(compgen -W "start stop" -- "$cur"))
       ;;
   esac
 }
@@ -1041,6 +1131,7 @@ case "${1:-help}" in
   list)         cmd_list ;;
   attach)       cmd_attach ;;
   kill)         cmd_kill ;;
+  slack)        shift; cmd_slack "$@" ;;
   completions)  cmd_completions ;;
   _rebalance)   cmd__rebalance ;;
   _complete)    shift; _cmd_complete "$@" ;;
@@ -1063,6 +1154,7 @@ Usage:
   claudespace list                  List active worktree columns
   claudespace attach                Attach to the session
   claudespace kill                  Kill the tmux session
+  claudespace slack [start|stop]    Start/stop the Slack bridge server
   claudespace completions           Output bash completion script
 
 Tab completion:

@@ -24,7 +24,14 @@ Worktrees are stored at `~/.claude-worktrees/<repo>/`, which is the same locatio
 
 ## Installation
 
-Copy the script to somewhere on your `$PATH`:
+Clone the repo and symlink the script onto your `$PATH`:
+
+```bash
+git clone https://github.com/blepfo/claudespace.git
+ln -sf "$(pwd)/claudespace/claudespace" ~/.local/bin/claudespace
+```
+
+Or, for a standalone install without cloning (no Slack bridge support):
 
 ```bash
 curl -o ~/.local/bin/claudespace https://raw.githubusercontent.com/blepfo/claudespace/main/claudespace
@@ -116,6 +123,21 @@ claudespace rename my-feature
 ```
 
 Re-tags the current column's panes to `claude:my-feature` and `shell:my-feature`. Useful after manually splitting a pane or to correct a column's identity.
+
+### Slack bridge
+
+Optionally connect claudespace to Slack — each pane gets a thread, Claude's notifications appear there, and you can reply in the thread to send input back to the pane. Requires a one-time Slack app setup. See [`.projects/slack-bridge/README.md`](.projects/slack-bridge/README.md) for full instructions.
+
+```bash
+cd claude-slack-bridge
+cp .env.example .env     # fill in Slack tokens
+npm install
+
+claudespace slack        # start the bridge in a tmux window
+claudespace slack stop   # stop it
+```
+
+The bridge is fully optional — if it's not running, everything else works normally.
 
 ### Other commands
 
