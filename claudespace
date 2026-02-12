@@ -69,37 +69,16 @@ copy_worktreeinclude() {
     # Trim whitespace
     pattern="$(echo "$pattern" | xargs)"
 
-    # Use git to check if files matching this pattern are ignored
-    # Then copy them if they exist in the source
-    # Handle both file and directory patterns
-    while IFS= read -r -d '' file; do
-      # Only copy if the file is gitignored
-      if git -C "$src_root" check-ignore -q "$file" 2>/dev/null; then
-        local rel="${file#$src_root/}"
-        local dest_file="$dest/$rel"
-        mkdir -p "$(dirname "$dest_file")"
-        if [[ -d "$file" ]]; then
-          cp -r "$file" "$dest_file"
-        else
-          cp "$file" "$dest_file"
-        fi
-        echo "  Copied: $rel"
-      fi
-    done < <(cd "$src_root" && find . -path "./.git" -prune -o -path "*/node_modules" -prune -o -name "$(basename "$pattern")" -print0 2>/dev/null \
-      | sed "s|^\./|$src_root/|" | tr '\n' '\0')
-
-    # Also try glob expansion directly for simple patterns like .env, .env.local
+    # Glob expansion for patterns relative to repo root (e.g., .claude/settings.local.json, .env)
     local expanded
     expanded=$(cd "$src_root" && ls -d $pattern 2>/dev/null || true)
     for match in $expanded; do
       local full="$src_root/$match"
       if [[ -e "$full" ]] && git -C "$src_root" check-ignore -q "$match" 2>/dev/null; then
         local dest_file="$dest/$match"
-        if [[ ! -e "$dest_file" ]]; then
-          mkdir -p "$(dirname "$dest_file")"
-          cp -r "$full" "$dest_file"
-          echo "  Copied: $match"
-        fi
+        mkdir -p "$(dirname "$dest_file")"
+        cp -r "$full" "$dest_file"
+        echo "  Copied: $match"
       fi
     done
   done < "$include_file"
