@@ -956,12 +956,12 @@ cmd_deploy() {
   else
     # Main repo is on a different branch — update ref without checkout
     echo "  Updating $target ref..."
-    local new_tip current_target
+    local new_tip origin_target
     new_tip=$(git -C "$wt_path" rev-parse HEAD)
-    current_target=$(git -C "$main_root" rev-parse "$target")
+    origin_target=$(git -C "$main_root" rev-parse "origin/$target")
 
-    if git -C "$main_root" merge-base --is-ancestor "$current_target" "$new_tip"; then
-      git -C "$main_root" update-ref "refs/heads/$target" "$new_tip" "$current_target"
+    if git -C "$main_root" merge-base --is-ancestor "$origin_target" "$new_tip"; then
+      git -C "$main_root" update-ref "refs/heads/$target" "$new_tip"
     else
       echo "Error: cannot fast-forward $target to $wt_branch" >&2
       exit 1
