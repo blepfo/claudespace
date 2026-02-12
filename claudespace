@@ -926,9 +926,16 @@ cmd_deploy() {
 
   echo "Deploying '$wt_branch' onto '$target'..."
 
+  # Fetch latest from origin so we rebase onto up-to-date target
+  echo "  Fetching origin/$target..."
+  git -C "$main_root" fetch origin "$target" || {
+    echo "Error: failed to fetch origin/$target" >&2
+    exit 1
+  }
+
   # Rebase worktree branch onto target
-  echo "  Rebasing $wt_branch onto $target..."
-  if ! git -C "$wt_path" rebase "$target"; then
+  echo "  Rebasing $wt_branch onto origin/$target..."
+  if ! git -C "$wt_path" rebase "origin/$target"; then
     echo "" >&2
     echo "Rebase failed. Resolve conflicts in: $wt_path" >&2
     echo "Then run: cd '$wt_path' && git rebase --continue" >&2
