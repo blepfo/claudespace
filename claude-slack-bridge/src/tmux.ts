@@ -20,7 +20,8 @@ export function sendKeys(paneId: string, text: string): void {
   // Escape single quotes for shell: ' → '\''
   const escaped = text.replace(/'/g, "'\\''");
 
-  execSync(`tmux send-keys -t '${paneId}' -- '${escaped}' Enter`, {
+  // -l sends text literally (no key name interpretation), then Enter submits
+  execSync(`tmux send-keys -t '${paneId}' -l '${escaped}' && tmux send-keys -t '${paneId}' Enter`, {
     timeout: 5000,
   });
 }

@@ -20,7 +20,7 @@ Three components:
 ## Prerequisites
 
 - Node.js (v18+)
-- `jq` — used by the hook script to parse JSON from stdin
+- `jq` — used by the hook script to parse JSON from stdin (`brew install jq` on macOS)
 - `curl` — used by the hook script and claudespace to POST to the bridge
 - `tmux` — already required by claudespace
 
@@ -28,12 +28,50 @@ Three components:
 
 ### 1. Create a Slack App
 
-1. Go to [api.slack.com/apps](https://api.slack.com/apps) and create a new app
-2. Enable **Socket Mode** (Settings → Socket Mode → Enable). Generate an app-level token with `connections:write` scope — this is your `SLACK_APP_TOKEN` (starts with `xapp-`)
-3. Add the **Bot Token Scope** `chat:write` (OAuth & Permissions → Scopes)
-4. Subscribe to **Events**: `message.channels` (Event Subscriptions → Subscribe to bot events). If using private channels, also add `message.groups`
-5. Install the app to your workspace. Copy the **Bot User OAuth Token** — this is your `SLACK_BOT_TOKEN` (starts with `xoxb-`)
-6. Invite the bot to the channel you want threads posted in. Get the **channel ID** (right-click channel name → View channel details → copy ID at the bottom)
+Go to [api.slack.com/apps](https://api.slack.com/apps) and create a new app (from scratch, not a manifest).
+
+#### Enable Socket Mode
+
+1. Go to **Settings → Socket Mode** (left sidebar)
+2. Toggle **Enable Socket Mode** to On
+3. When prompted, create an app-level token with the `connections:write` scope
+4. Copy this token — this is your `SLACK_APP_TOKEN` (starts with `xapp-`)
+
+#### Add Bot Token Scopes
+
+1. Go to **OAuth & Permissions** (left sidebar)
+2. Scroll to **Scopes → Bot Token Scopes**
+3. Click **Add an OAuth Scope** and add each of these:
+   - `chat:write` — lets the bot post messages and thread replies
+   - `channels:history` — lets the bot receive message events in public channels
+   - `groups:history` — (only if using private channels) lets the bot receive message events in private channels
+
+#### Subscribe to Events
+
+**This is separate from OAuth scopes and is required for the bot to receive messages.**
+
+1. Go to **Event Subscriptions** (left sidebar)
+2. Toggle **Enable Events** to On
+3. Expand **Subscribe to bot events**
+4. Click **Add Bot User Event** and add:
+   - `message.channels` — notifies the bot of messages in public channels
+   - `message.groups` — (only if using private channels) notifies the bot of messages in private channels
+5. Click **Save Changes**
+
+#### Install to Workspace
+
+1. Go to **OAuth & Permissions** (left sidebar)
+2. Click **Install to Workspace** (or **Reinstall to Workspace** if prompted)
+3. Authorize the app
+4. Copy the **Bot User OAuth Token** — this is your `SLACK_BOT_TOKEN` (starts with `xoxb-`)
+
+**Important:** You must reinstall the app any time you change scopes or event subscriptions.
+
+#### Invite the Bot
+
+1. In Slack, go to the channel you want threads posted in
+2. Type `/invite @YourBotName` to add the bot to the channel
+3. Get the **channel ID**: right-click the channel name → View channel details → copy the ID at the bottom
 
 ### 2. Configure Environment Variables
 
@@ -101,6 +139,13 @@ Replace `/absolute/path/to/claudespace` with the actual path to your claudespace
 ### 5. Start the Bridge
 
 ```bash
+claudespace slack          # starts in a tmux window
+claudespace slack stop     # stops it
+```
+
+Or run directly:
+
+```bash
 cd claude-slack-bridge
 npm run dev
 ```
@@ -114,12 +159,19 @@ curl localhost:7890/health
 
 For production use, `npm run build && npm start` compiles TypeScript to `dist/` and runs the compiled JS.
 
+### Troubleshooting
+
+- **`not_in_channel` error**: The bot needs to be invited to the channel. Run `/invite @YourBotName` in the channel.
+- **No events received when replying in threads**: Make sure you have both the OAuth scope (`channels:history`) AND the event subscription (`message.channels`). These are configured in different sections of the Slack app settings. Reinstall the app after changing either.
+- **Socket Mode connected but no message events**: Verify Event Subscriptions is toggled On and `message.channels` is listed under "Subscribe to bot events".
+
 ## Usage
 
 Once the bridge is running:
 
 - `claudespace add <name>` creates a Slack thread for the new session
 - Claude Code notifications (permission prompts, task updates) appear in the thread
+- When Claude stops, its final message is posted to the thread
 - Reply in the Slack thread to send input to the pane:
   - `y`, `yes`, `ok`, `approve`, `go`, `yeah`, `yep`, `sure` → sends `y`
   - `n`, `no`, `deny`, `reject`, `nope` → sends `n`

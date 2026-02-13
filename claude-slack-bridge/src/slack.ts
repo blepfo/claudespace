@@ -35,24 +35,23 @@ export async function postToThread(
 // Listen for threaded replies from users (not bots)
 app.message(async ({ message }) => {
   // Only handle threaded, non-bot, text messages
-  if (
-    message.subtype ||
-    !("thread_ts" in message) ||
-    !message.thread_ts ||
-    ("bot_id" in message && message.bot_id) ||
-    !("text" in message) ||
-    !message.text
-  ) {
+  if (message.subtype) return;
+  if (!("thread_ts" in message) || !message.thread_ts) return;
+  if ("bot_id" in message && message.bot_id) return;
+  if (!("text" in message) || !message.text) return;
+
+  const mapping = paneMap.getByThreadTs(message.thread_ts);
+  if (!mapping) {
+    console.log(`[slack] Reply in unmapped thread — ignoring`);
     return;
   }
 
-  const mapping = paneMap.getByThreadTs(message.thread_ts);
-  if (!mapping) return;
-
   const reply = mapReply(message.text);
+  console.log(`[slack] ${mapping.name}: received reply — "${reply}"`);
 
   try {
     sendKeys(mapping.pane_id, reply);
+    console.log(`[slack] ${mapping.name}: sent to pane`);
     await postToThread(
       message.thread_ts,
       mapping.channel_id,
@@ -60,10 +59,11 @@ app.message(async ({ message }) => {
     );
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[slack] ${mapping.name}: send failed — ${errorMsg}`);
     await postToThread(
       message.thread_ts,
       mapping.channel_id,
-      `Failed to send to pane ${mapping.pane_id}: ${errorMsg}`
+      `Failed to send to ${mapping.name}: ${errorMsg}`
     );
   }
 });

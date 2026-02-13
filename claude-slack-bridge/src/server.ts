@@ -20,6 +20,7 @@ expressApp.post("/thread", async (req, res) => {
       return;
     }
 
+    console.log(`[tmux] ${name}: creating thread`);
     const text = `*${name}* — New Claude Code session (pane ${pane_id})`;
     const threadTs = await createThread(config.slackChannelId, text);
 
@@ -31,10 +32,11 @@ expressApp.post("/thread", async (req, res) => {
       created_at: Date.now(),
     });
 
+    console.log(`[tmux] ${name}: thread created`);
     res.json({ ok: true, thread_ts: threadTs });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error("POST /thread error:", msg);
+    console.error(`[tmux] ${req.body?.name ?? "?"}: thread error — ${msg}`);
     res.status(500).json({ error: msg });
   }
 });
@@ -50,18 +52,21 @@ expressApp.post("/notify", async (req, res) => {
 
     const mapping = paneMap.getByPaneId(pane_id);
     if (!mapping) {
+      console.log(`[tmux] ${name ?? pane_id}: ${type} received but no thread mapping`);
       res.status(404).json({ error: `No mapping for pane ${pane_id}` });
       return;
     }
 
     const prefix = type === "stop" ? "Claude finished" : "";
     const text = prefix ? `${prefix}: ${message}` : message;
+    const preview = message.length > 80 ? message.slice(0, 80) + "..." : message;
 
+    console.log(`[tmux] ${mapping.name}: ${type} — ${preview}`);
     await postToThread(mapping.thread_ts, mapping.channel_id, text);
     res.json({ ok: true });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error("POST /notify error:", msg);
+    console.error(`[tmux] ${req.body?.name ?? "?"}: notify error — ${msg}`);
     res.status(500).json({ error: msg });
   }
 });
@@ -77,18 +82,21 @@ expressApp.post("/close", async (req, res) => {
 
     const mapping = paneMap.getByPaneId(pane_id);
     if (mapping) {
+      console.log(`[tmux] ${mapping.name}: session closed`);
       await postToThread(
         mapping.thread_ts,
         mapping.channel_id,
         `Session *${name || mapping.name}* closed.`
       );
       paneMap.remove(pane_id);
+    } else {
+      console.log(`[tmux] ${name ?? pane_id}: close received but no thread mapping`);
     }
 
     res.json({ ok: true });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error("POST /close error:", msg);
+    console.error(`[tmux] ${req.body?.name ?? "?"}: close error — ${msg}`);
     res.status(500).json({ error: msg });
   }
 });
