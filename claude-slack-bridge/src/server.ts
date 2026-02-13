@@ -4,6 +4,7 @@ import * as paneMap from "./pane-map.js";
 import { createThread, postToThread } from "./slack.js";
 import type {
   CreateThreadRequest,
+  ConnectRequest,
   NotifyRequest,
   CloseRequest,
 } from "./types.js";
@@ -31,12 +32,67 @@ expressApp.post("/thread", async (req, res) => {
       channel_id: config.slackChannelId,
       created_at: Date.now(),
     });
+    paneMap.persistThread(name, threadTs, config.slackChannelId);
 
     console.log(`[tmux] ${name}: thread created`);
     res.json({ ok: true, thread_ts: threadTs });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[tmux] ${req.body?.name ?? "?"}: thread error — ${msg}`);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// POST /connect — reconnect a pane to an existing thread, or create a new one
+expressApp.post("/connect", async (req, res) => {
+  try {
+    const { pane_id, name } = req.body as ConnectRequest;
+    if (!pane_id || !name) {
+      res.status(400).json({ error: "pane_id and name are required" });
+      return;
+    }
+
+    const existing = paneMap.getPersistedThread(name);
+
+    if (existing) {
+      // Reconnect to existing thread
+      paneMap.set(pane_id, {
+        pane_id,
+        name,
+        thread_ts: existing.thread_ts,
+        channel_id: existing.channel_id,
+        created_at: Date.now(),
+      });
+
+      console.log(`[tmux] ${name}: reconnected to existing thread`);
+      await postToThread(
+        existing.thread_ts,
+        existing.channel_id,
+        `Reconnected *${name}* (pane ${pane_id})`
+      );
+
+      res.json({ ok: true, thread_ts: existing.thread_ts, reconnected: true });
+    } else {
+      // No existing thread — create a new one
+      console.log(`[tmux] ${name}: no existing thread, creating new`);
+      const text = `*${name}* — Claude Code session (pane ${pane_id})`;
+      const threadTs = await createThread(config.slackChannelId, text);
+
+      paneMap.set(pane_id, {
+        pane_id,
+        name,
+        thread_ts: threadTs,
+        channel_id: config.slackChannelId,
+        created_at: Date.now(),
+      });
+      paneMap.persistThread(name, threadTs, config.slackChannelId);
+
+      console.log(`[tmux] ${name}: thread created`);
+      res.json({ ok: true, thread_ts: threadTs, reconnected: false });
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[tmux] ${req.body?.name ?? "?"}: connect error — ${msg}`);
     res.status(500).json({ error: msg });
   }
 });
@@ -74,7 +130,7 @@ expressApp.post("/notify", async (req, res) => {
 // POST /close — post closing message and remove mapping
 expressApp.post("/close", async (req, res) => {
   try {
-    const { pane_id, name } = req.body as CloseRequest;
+    const { pane_id, name, permanent } = req.body as CloseRequest;
     if (!pane_id) {
       res.status(400).json({ error: "pane_id is required" });
       return;
@@ -82,15 +138,22 @@ expressApp.post("/close", async (req, res) => {
 
     const mapping = paneMap.getByPaneId(pane_id);
     if (mapping) {
-      console.log(`[tmux] ${mapping.name}: session closed`);
+      console.log(`[tmux] ${mapping.name}: session closed${permanent ? " (permanent)" : ""}`);
       await postToThread(
         mapping.thread_ts,
         mapping.channel_id,
         `Session *${name || mapping.name}* closed.`
       );
       paneMap.remove(pane_id);
+      if (permanent) {
+        paneMap.removePersistedThread(name || mapping.name);
+      }
     } else {
       console.log(`[tmux] ${name ?? pane_id}: close received but no thread mapping`);
+      // Even without an active mapping, honor permanent deletion from persistent store
+      if (permanent && name) {
+        paneMap.removePersistedThread(name);
+      }
     }
 
     res.json({ ok: true });

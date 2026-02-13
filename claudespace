@@ -496,14 +496,14 @@ cmd_delete() {
 
   echo "Delete complete for '$name'."
 
-  # Notify Slack bridge (background, fail-silent)
+  # Notify Slack bridge (background, fail-silent) — permanent removes persistent thread mapping
   if session_exists; then
     local _dpane
     _dpane=$(find_claude_pane "$name")
     if [[ -n "$_dpane" ]]; then
       curl -sf -X POST "http://localhost:${BRIDGE_PORT:-7890}/close" \
         -H 'Content-Type: application/json' \
-        -d "{\"pane_id\":\"${_dpane}\",\"name\":\"${name}\"}" \
+        -d "{\"pane_id\":\"${_dpane}\",\"name\":\"${name}\",\"permanent\":true}" \
         >/dev/null 2>&1 &
     fi
   fi
@@ -1068,6 +1068,58 @@ cmd_slack() {
   esac
 }
 
+cmd_connect() {
+  if ! session_exists; then
+    echo "No session found. Run 'claudespace init' first." >&2
+    exit 1
+  fi
+
+  # Check bridge health
+  if ! curl -sf "http://localhost:${BRIDGE_PORT:-7890}/health" >/dev/null 2>&1; then
+    echo "Slack bridge is not running. Start it with 'claudespace slack'." >&2
+    exit 1
+  fi
+
+  local names=()
+  if [[ $# -gt 0 ]]; then
+    names=("$@")
+  else
+    # Connect all active claude panes
+    while IFS= read -r tag; do
+      [[ -n "$tag" ]] && names+=("${tag#claude:}")
+    done < <(tmux list-panes -t "$CSPACE_SESSION:0" -F '#{@cspace}' \
+      | grep '^claude:')
+  fi
+
+  if [[ ${#names[@]} -eq 0 ]]; then
+    echo "No active columns to connect."
+    return
+  fi
+
+  for name in "${names[@]}"; do
+    local pane_id
+    pane_id=$(find_claude_pane "$name")
+    if [[ -z "$pane_id" ]]; then
+      echo "$name: no active pane found (skipped)"
+      continue
+    fi
+
+    local result
+    result=$(curl -sf -X POST "http://localhost:${BRIDGE_PORT:-7890}/connect" \
+      -H 'Content-Type: application/json' \
+      -d "{\"pane_id\":\"${pane_id}\",\"name\":\"${name}\"}" 2>&1) || {
+      echo "$name: bridge error"
+      continue
+    }
+
+    if echo "$result" | grep -q '"reconnected":true'; then
+      echo "$name: reconnected to existing thread"
+    else
+      echo "$name: new thread created"
+    fi
+  done
+}
+
 # Internal: rebalance entry point for tmux run-shell
 cmd__rebalance() {
   if ! session_exists; then
@@ -1082,6 +1134,7 @@ _cmd_complete() {
   case "$subcmd" in
     add)     _list_hidden_worktrees ;;
     delete)  _list_all_worktrees ;;
+    connect) _list_active_worktrees ;;
   esac
 }
 
@@ -1093,12 +1146,12 @@ _claudespace() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
-    COMPREPLY=($(compgen -W "init add hide delete move rename deploy shrink grow balance list attach kill slack help completions" -- "$cur"))
+    COMPREPLY=($(compgen -W "init add hide delete move rename deploy shrink grow balance list attach kill slack connect help completions" -- "$cur"))
     return
   fi
 
   case "$prev" in
-    add|delete)
+    add|delete|connect)
       local names
       names=$(claudespace _complete "$prev" 2>/dev/null)
       COMPREPLY=($(compgen -W "$names" -- "$cur"))
@@ -1132,6 +1185,7 @@ case "${1:-help}" in
   attach)       cmd_attach ;;
   kill)         cmd_kill ;;
   slack)        shift; cmd_slack "$@" ;;
+  connect)      shift; cmd_connect "$@" ;;
   completions)  cmd_completions ;;
   _rebalance)   cmd__rebalance ;;
   _complete)    shift; _cmd_complete "$@" ;;
@@ -1155,6 +1209,7 @@ Usage:
   claudespace attach                Attach to the session
   claudespace kill                  Kill the tmux session
   claudespace slack [start|stop]    Start/stop the Slack bridge server
+  claudespace connect [name...]     Reconnect columns to Slack bridge threads
   claudespace completions           Output bash completion script
 
 Tab completion:

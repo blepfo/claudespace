@@ -32,6 +32,9 @@ export async function postToThread(
   });
 }
 
+// Track threads we've already warned about disconnection (dedup)
+const warnedThreads = new Set<string>();
+
 // Listen for threaded replies from users (not bots)
 app.message(async ({ message }) => {
   // Only handle threaded, non-bot, text messages
@@ -40,20 +43,38 @@ app.message(async ({ message }) => {
   if ("bot_id" in message && message.bot_id) return;
   if (!("text" in message) || !message.text) return;
 
-  const mapping = paneMap.getByThreadTs(message.thread_ts);
+  const threadTs = message.thread_ts;
+  const mapping = paneMap.getByThreadTs(threadTs);
+
   if (!mapping) {
-    console.log(`[slack] Reply in unmapped thread — ignoring`);
+    // No active mapping — check if this is a known thread that lost its connection
+    const persisted = paneMap.getPersistedByThreadTs(threadTs);
+    if (persisted && !warnedThreads.has(threadTs)) {
+      warnedThreads.add(threadTs);
+      const channelId = "channel" in message ? (message.channel as string) : persisted.channel_id;
+      console.log(`[slack] Reply in disconnected thread for ${persisted.name} — warning`);
+      await postToThread(
+        threadTs,
+        channelId,
+        `This session (*${persisted.name}*) is disconnected from the bridge. Run \`claudespace connect ${persisted.name}\` to reconnect.`
+      );
+    } else if (!persisted) {
+      console.log(`[slack] Reply in unknown thread — ignoring`);
+    }
     return;
   }
 
   const reply = mapReply(message.text);
   console.log(`[slack] ${mapping.name}: received reply — "${reply}"`);
 
+  // Clear any previous warning for this thread since it's now connected
+  warnedThreads.delete(threadTs);
+
   try {
     sendKeys(mapping.pane_id, reply);
     console.log(`[slack] ${mapping.name}: sent to pane`);
     await postToThread(
-      message.thread_ts,
+      threadTs,
       mapping.channel_id,
       `Sent to ${mapping.name}: \`${reply}\``
     );
@@ -61,7 +82,7 @@ app.message(async ({ message }) => {
     const errorMsg = err instanceof Error ? err.message : String(err);
     console.error(`[slack] ${mapping.name}: send failed — ${errorMsg}`);
     await postToThread(
-      message.thread_ts,
+      threadTs,
       mapping.channel_id,
       `Failed to send to ${mapping.name}: ${errorMsg}`
     );

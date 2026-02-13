@@ -4,7 +4,7 @@
 Socket Mode avoids exposing a public URL. The bridge runs locally alongside the tmux session, so there's no need for ingress. Socket Mode also simplifies development—no ngrok or tunneling required.
 
 ## In-memory Mapping
-Pane-to-thread mappings are stored in a `Map` with TTL cleanup. Sessions are ephemeral (destroyed on `claudespace kill`), so persistence adds complexity with minimal benefit. The 24h TTL handles stale entries from crashes.
+Pane-to-thread mappings are stored in a `Map` with TTL cleanup. Sessions are ephemeral (destroyed on `claudespace kill`), so persistence adds complexity with minimal benefit. The 24h TTL handles stale entries from crashes. *(Superseded by "Reconnection: Two Separate Maps" below — active map stays in-memory, but a persistent thread map is added alongside it.)*
 
 ## Single Hook Script for Both Events
 One `notify-slack.sh` handles both Notification and Stop events. The script reads `hook_event_name` from the JSON payload and adjusts the message accordingly. This keeps hook configuration simple (same command for both event types).
@@ -44,3 +44,31 @@ The Claude Code Stop hook payload doesn't include the assistant's final message 
 
 ## Slack App Setup: Scopes vs Event Subscriptions
 Slack requires BOTH OAuth scopes AND event subscriptions — they're configured in separate sections and both are required. `channels:history` (OAuth scope) grants permission to read messages, but `message.channels` (event subscription) is what actually triggers the bot to receive message events. Missing either one results in silent failure — Socket Mode connects fine but no events arrive. The app must be reinstalled after changing scopes.
+
+## Reconnection: Two Separate Maps
+
+The reconnection design uses two separate data stores rather than adding persistence to the existing in-memory map:
+
+1. **Active map** (existing, in-memory, keyed by `pane_id`) — routes notifications and replies to live panes. Cleared on bridge restart. This is the hot path.
+2. **Thread map** (new, persisted to `data/thread-map.json`, keyed by `name`) — remembers which Slack thread belongs to which worktree. Survives restarts.
+
+Why separate: `pane_id` is ephemeral (changes on hide/re-add, meaningless after restart), but `name` is stable (the worktree name persists). The thread map captures the durable relationship (name↔thread), while the active map captures the transient one (pane↔thread).
+
+## Reconnection: Explicit over Automatic
+
+The bridge does NOT auto-reconnect on startup. The user runs `claudespace connect` explicitly. Reasons:
+- Predictable — user controls when connections are re-established
+- Simple — no startup reconciliation logic (checking which panes still exist, handling stale threads)
+- Matches existing pattern — `claudespace add` creates connections, `claudespace connect` restores them
+
+## Reconnection: `/connect` vs Modifying `/thread`
+
+`POST /connect` is a new endpoint rather than changing `/thread` behavior. `cmd_add` continues to use `/thread` (always creates a new thread). This keeps the semantics clear: `add` = new session = new thread; `connect` = reconnect to existing thread if possible. The persistent store is updated by both.
+
+## Reconnection: `/close` Permanent Flag
+
+`POST /close` gains an optional `permanent` boolean. Default false (hide) keeps the thread in the persistent store so it can be reconnected. `permanent: true` (delete) removes it entirely, since the worktree is being destroyed. This avoids stale thread records accumulating for deleted worktrees.
+
+## Reconnection: Unmapped Thread Warning (Dedup)
+
+When a Slack reply arrives for an unmapped thread, the bridge posts a warning to the thread with reconnection instructions. A `Set<thread_ts>` tracks which threads have been warned to avoid spamming on every reply. The Set is in-memory only — restarting the bridge resets it, which is fine (one warning per restart per thread is acceptable).

@@ -1,14 +1,23 @@
-import { PaneMapping } from "./types.js";
+import { PaneMapping, ThreadRecord } from "./types.js";
 import { config } from "./config.js";
+import * as persistence from "./persistence.js";
 
 const PANE_ID_RE = /^%\d+$/;
 
+// Active pane→thread mappings (in-memory, lost on restart)
 const mappings = new Map<string, PaneMapping>();
 
-export function set(paneId: string, mapping: PaneMapping): void {
+// Persistent name→thread mappings (survives restarts)
+let threadMap: Map<string, ThreadRecord> = persistence.load();
+
+function validatePaneId(paneId: string): void {
   if (!PANE_ID_RE.test(paneId)) {
     throw new Error(`Invalid pane_id format: ${paneId}`);
   }
+}
+
+export function set(paneId: string, mapping: PaneMapping): void {
+  validatePaneId(paneId);
   mappings.set(paneId, mapping);
 }
 
@@ -40,6 +49,32 @@ export function cleanup(): void {
       mappings.delete(paneId);
     }
   }
+}
+
+// --- Persistent thread map ---
+
+export function persistThread(name: string, threadTs: string, channelId: string): void {
+  threadMap.set(name, { name, thread_ts: threadTs, channel_id: channelId });
+  persistence.save(threadMap);
+}
+
+export function getPersistedThread(name: string): ThreadRecord | undefined {
+  return threadMap.get(name);
+}
+
+export function getPersistedByThreadTs(threadTs: string): ThreadRecord | undefined {
+  for (const record of threadMap.values()) {
+    if (record.thread_ts === threadTs) {
+      return record;
+    }
+  }
+  return undefined;
+}
+
+export function removePersistedThread(name: string): boolean {
+  const deleted = threadMap.delete(name);
+  if (deleted) persistence.save(threadMap);
+  return deleted;
 }
 
 // Run cleanup every 5 minutes

@@ -24,8 +24,32 @@
 - [x] Verify `jq` is installed
 - [x] Test end-to-end: thread creation, notifications, reply routing
 
+## Reconnection (done)
+
+See [reconnect/README.md](reconnect/README.md) for design.
+
+### Bridge changes
+- [x] `src/persistence.ts` — read/write `data/thread-map.json` (name → thread_ts)
+- [x] Modify `server.ts` — `POST /connect` endpoint (reconnect or create thread)
+- [x] Modify `server.ts` — persist thread_ts on `/thread` creation
+- [x] Modify `server.ts` — `permanent` flag on `POST /close` (delete persistent mapping)
+- [x] Modify `slack.ts` — warn in-thread on reply to unmapped thread (with dedup Set)
+- [x] Modify `types.ts` — `ConnectRequest`, update `CloseRequest` with `permanent`
+- [x] Add `data/` to `.gitignore`
+
+### CLI changes
+- [x] `cmd_connect [name...]` — call `POST /connect` for specified or all active panes
+- [x] Modify `cmd_delete` — pass `"permanent": true` in `/close` body
+- [x] Update completions and help text
+
+### Testing
+- [ ] Test `claudespace connect` with bridge running (should create new threads)
+- [ ] Test bridge restart → `claudespace connect` (should reconnect to existing threads)
+- [ ] Test Slack reply to disconnected thread (should warn with reconnect instructions)
+- [ ] Test `claudespace delete` clears persistent mapping
+- [ ] Test `claudespace hide` + `claudespace connect` reconnects to same thread
+
 ## Future
-- [ ] Persistent mapping storage (SQLite or file-based)
 - [ ] Rich Slack message formatting (Block Kit)
 - [ ] Slash commands in Slack for claudespace operations (`/cspace list`, etc.)
 - [ ] Multi-session support
