@@ -36,11 +36,21 @@ Uses `NodeNext` module resolution with `.js` extensions in imports (e.g., `impor
 ## tmux send-keys: -l flag + separate Enter
 Text is sent with `tmux send-keys -l` (literal mode), then `Enter` is sent in a separate `send-keys` call. The original approach used `send-keys -- 'text' Enter`, but `--` makes everything after it literal — including `Enter`, which was typed as the string "Enter" instead of pressing the Enter key. The `-l` flag on the first call prevents the text from being interpreted as key names (e.g., a message containing "Enter" or "Escape" won't trigger those keys).
 
-## Stop Event: Transcript Extraction
-The Claude Code Stop hook payload doesn't include the assistant's final message text. It only provides `transcript_path` pointing to a JSONL file. The hook reads the last 100 lines of the transcript with `jq -s` (slurp mode) to find the last assistant turn with text content. Key learnings:
-- `jq`'s `[]?` (try operator) can silently suppress output on some versions — use `select(.message.content)` guard instead
-- Must use `jq -s` (slurp) to process multiple JSONL lines as an array and extract the last match, since streaming mode with `-r` produces multiline output that's hard to parse with shell tools
-- Truncate to 500 chars for Slack readability
+## Hook Transcript Extraction
+All hook events (Stop, Notification) include `transcript_path` in the payload, pointing to the session's JSONL transcript.
+
+**Stop events** extract ALL text blocks from the last assistant message (not just the last one), joined with double newlines. Cap at 8000 chars. The bridge prepends a bold `*Claude finished:*` header.
+
+**Notification events** parse the transcript for the last `tool_use` block and enrich the terse notification message with details:
+- Bash: description + command in a code block
+- Edit/Write/Read: file path in inline code
+- AskUserQuestion: question text + options as a bullet list
+
+Key jq learnings:
+- `jq`'s `[]?` (try operator) can silently suppress output — use `select(.message.content)` guard instead
+- Must use `jq -s` (slurp) to process multiple JSONL lines as an array
+- `last` on empty array errors in some jq versions — use `.[-1]` instead (returns `null` safely)
+- Notification `notification_type` field: `idle_prompt`, `permission_prompt`
 
 ## Slack App Setup: Scopes vs Event Subscriptions
 Slack requires BOTH OAuth scopes AND event subscriptions — they're configured in separate sections and both are required. `channels:history` (OAuth scope) grants permission to read messages, but `message.channels` (event subscription) is what actually triggers the bot to receive message events. Missing either one results in silent failure — Socket Mode connects fine but no events arrive. The app must be reinstalled after changing scopes.

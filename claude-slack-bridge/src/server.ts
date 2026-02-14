@@ -113,8 +113,12 @@ expressApp.post("/notify", async (req, res) => {
       return;
     }
 
-    const prefix = type === "stop" ? "Claude finished" : "";
-    const text = prefix ? `${prefix}: ${message}` : message;
+    let text: string;
+    if (type === "stop") {
+      text = message ? `*Claude finished:*\n${message}` : "*Claude finished*";
+    } else {
+      text = message;
+    }
     const preview = message.length > 80 ? message.slice(0, 80) + "..." : message;
 
     console.log(`[tmux] ${mapping.name}: ${type} — ${preview}`);

@@ -31,16 +31,55 @@ event=$(echo "$input" | jq -r '.hook_event_name // empty' 2>/dev/null || true)
 if [[ "$event" == "Notification" ]]; then
   message=$(echo "$input" | jq -r '.message // "Notification"' 2>/dev/null || echo "Notification")
   type="notification"
+
+  # Enrich with tool details from transcript
+  transcript=$(echo "$input" | jq -r '.transcript_path // empty' 2>/dev/null || true)
+  if [[ -n "$transcript" && -f "$transcript" ]]; then
+    tool_json=$(tail -200 "$transcript" \
+      | jq -s '[.[] | select(.type == "assistant" and .message.content) | .message.content[] | select(.type == "tool_use")] | .[-1]' 2>/dev/null) || true
+
+    if [[ -n "$tool_json" && "$tool_json" != "null" ]]; then
+      tool_name=$(echo "$tool_json" | jq -r '.name // empty')
+      detail=""
+      case "$tool_name" in
+        Bash)
+          desc=$(echo "$tool_json" | jq -r '.input.description // empty')
+          cmd=$(echo "$tool_json" | jq -r '.input.command // empty')
+          if [[ -n "$cmd" ]]; then
+            [[ -n "$desc" ]] && detail="$desc"$'\n'
+            detail="${detail}"$'```\n'"$cmd"$'\n```'
+          fi
+          ;;
+        Edit|Write|Read)
+          file=$(echo "$tool_json" | jq -r '.input.file_path // empty')
+          [[ -n "$file" ]] && detail="\`$file\`"
+          ;;
+        AskUserQuestion)
+          detail=$(echo "$tool_json" | jq -r '
+            .input.questions[]? |
+            .question + "\n" + ([.options[]? | "  \u2022 " + .label + " \u2014 " + .description] | join("\n"))
+          ' 2>/dev/null) || true
+          ;;
+      esac
+      [[ -n "$detail" ]] && message="${message}"$'\n'"${detail}"
+    fi
+  fi
+
 elif [[ "$event" == "Stop" ]]; then
   transcript=$(echo "$input" | jq -r '.transcript_path // empty' 2>/dev/null || true)
   message=""
   if [[ -n "$transcript" && -f "$transcript" ]]; then
-    # Slurp last 100 JSONL lines, find the last assistant text block
-    message=$(tail -100 "$transcript" \
-      | jq -s -r '[.[] | select(.type == "assistant" and .message.content) | [.message.content[] | select(.type == "text") | .text] | last // empty | select(length > 0)] | last // empty' 2>/dev/null) || true
-    # Truncate to 500 chars for Slack readability
-    if [[ ${#message} -gt 500 ]]; then
-      message="${message:0:500}..."
+    # Extract ALL text blocks from the last assistant message
+    message=$(tail -200 "$transcript" \
+      | jq -s -r '
+        [.[] | select(.type == "assistant" and .message.content)
+         | [.message.content[] | select(.type == "text") | .text]
+         | join("\n\n") | select(length > 0)
+        ] | .[-1] // empty
+      ' 2>/dev/null) || true
+    # Cap at 8000 chars (Slack collapses long code blocks)
+    if [[ ${#message} -gt 8000 ]]; then
+      message="${message:0:8000}…(truncated)"
     fi
   fi
   : "${message:=Task completed}"

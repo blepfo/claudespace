@@ -49,8 +49,19 @@ See [reconnect/README.md](reconnect/README.md) for design.
 - [ ] Test `claudespace delete` clears persistent mapping
 - [ ] Test `claudespace hide` + `claudespace connect` reconnects to same thread
 
+## Richer Slack Messages (done)
+
+### Hook script (`hooks/notify-slack.sh`)
+- [x] Stop events: extract ALL text blocks from last assistant message (was: last block only, truncated to 500 chars)
+- [x] Stop events: cap at 8000 chars instead of 500
+- [x] Notification events: enrich with tool details from transcript (Bash command, file paths, AskUserQuestion options)
+- [x] Fix jq `last` on empty array — use `.[-1]` (returns `null` safely)
+
+### Bridge (`server.ts`)
+- [x] Stop messages: bold `*Claude finished:*` header + full text (was: `Claude finished: {truncated}`)
+- [x] Notification messages: pass through as-is (hook handles Slack formatting)
+
 ## Future
-- [ ] Rich Slack message formatting (Block Kit)
 - [ ] Slash commands in Slack for claudespace operations (`/cspace list`, etc.)
 - [ ] Multi-session support
 - [ ] Remove debug `app.event("message")` listener once stable
