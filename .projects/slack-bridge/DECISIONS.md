@@ -37,20 +37,34 @@ Uses `NodeNext` module resolution with `.js` extensions in imports (e.g., `impor
 Text is sent with `tmux send-keys -l` (literal mode), then `Enter` is sent in a separate `send-keys` call. The original approach used `send-keys -- 'text' Enter`, but `--` makes everything after it literal — including `Enter`, which was typed as the string "Enter" instead of pressing the Enter key. The `-l` flag on the first call prevents the text from being interpreted as key names (e.g., a message containing "Enter" or "Escape" won't trigger those keys).
 
 ## Hook Transcript Extraction
-All hook events (Stop, Notification) include `transcript_path` in the payload, pointing to the session's JSONL transcript.
 
-**Stop events** extract ALL text blocks from the last assistant message (not just the last one), joined with double newlines. Cap at 8000 chars. The bridge prepends a bold `*Claude finished:*` header.
+Claude Code automatically writes a JSONL transcript for every session at `~/.claude/projects/<project-hash>/<session-id>.jsonl`. Each line is a JSON object with a `type` field (`assistant`, `user`, `system`, `progress`, `file-history-snapshot`). Assistant entries have `.message.content` arrays containing `text` and `tool_use` blocks. All hook events (Stop, Notification) include `transcript_path` in the payload.
 
-**Notification events** parse the transcript for the last `tool_use` block and enrich the terse notification message with details:
-- Bash: description + command in a code block
-- Edit/Write/Read: file path in inline code
-- AskUserQuestion: question text + options as a bullet list
+### Tiered enrichment strategy for notifications
 
-Key jq learnings:
-- `jq`'s `[]?` (try operator) can silently suppress output — use `select(.message.content)` guard instead
-- Must use `jq -s` (slurp) to process multiple JSONL lines as an array
+The hook uses a three-tier approach, falling through if the previous tier produces nothing:
+
+1. **Transcript enrichment** (structured data for known tools): Parses the last `tool_use` block from the transcript. A `format_tool_detail` function dispatches on tool name:
+   - Bash: description + command in a code block
+   - Edit/Write/Read: file path in inline code
+   - AskUserQuestion: question text + options as a bullet list
+   - ExitPlanMode: reads the plan file from disk (finds the last Write/Edit file path in the transcript)
+2. **Pane capture** (fallback for unhandled tools): `tmux capture-pane` grabs the visible terminal content. Used for idle prompts and any future tool types not yet in the case statement.
+
+### Stop event extraction
+
+Extracts ALL text blocks from the last assistant message (not just the last block), joined with double newlines. Cap at 8000 chars. The bridge prepends a bold `*Claude finished:*` header. A 0.3s sleep before reading handles a race condition where the Stop hook fires before the final transcript entry is flushed to disk.
+
+### Notification payload fields
+
+All Notification events include: `session_id`, `transcript_path`, `cwd`, `hook_event_name`, `message`, `notification_type`. The `notification_type` values observed: `idle_prompt`, `permission_prompt`. The `message` field is terse (e.g., "Claude Code needs your attention") — hence the need for enrichment.
+
+### jq learnings
+
+- `[]?` (try operator) can silently suppress output — use `select(.field)` guard instead
+- Must use `jq -s` (slurp) to process JSONL as an array
 - `last` on empty array errors in some jq versions — use `.[-1]` instead (returns `null` safely)
-- Notification `notification_type` field: `idle_prompt`, `permission_prompt`
+- Transcript also contains `progress`, `system`, `file-history-snapshot` entries — always filter with `select(.type == "assistant" and .message.content)`
 
 ## Slack App Setup: Scopes vs Event Subscriptions
 Slack requires BOTH OAuth scopes AND event subscriptions — they're configured in separate sections and both are required. `channels:history` (OAuth scope) grants permission to read messages, but `message.channels` (event subscription) is what actually triggers the bot to receive message events. Missing either one results in silent failure — Socket Mode connects fine but no events arrive. The app must be reinstalled after changing scopes.

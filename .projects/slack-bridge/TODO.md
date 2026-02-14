@@ -54,14 +54,20 @@ See [reconnect/README.md](reconnect/README.md) for design.
 ### Hook script (`hooks/notify-slack.sh`)
 - [x] Stop events: extract ALL text blocks from last assistant message (was: last block only, truncated to 500 chars)
 - [x] Stop events: cap at 8000 chars instead of 500
-- [x] Notification events: enrich with tool details from transcript (Bash command, file paths, AskUserQuestion options)
+- [x] Stop events: `sleep 0.3` before reading transcript (race condition — hook fires before final entry is flushed)
+- [x] Notification events: tiered enrichment — transcript parsing → pane capture fallback
+- [x] Notification enrichment for Bash (description + command), Edit/Write/Read (file path), AskUserQuestion (question + options)
+- [x] ExitPlanMode: reads plan file from disk (finds last Write/Edit path in transcript)
+- [x] Pane capture fallback for unhandled tools (strips trailing blank lines)
 - [x] Fix jq `last` on empty array — use `.[-1]` (returns `null` safely)
+- [x] Refactor: helpers (`last_tool_use`, `last_assistant_text`, `capture_pane`, `format_tool_detail`, `truncate_message`), clear section structure
 
 ### Bridge (`server.ts`)
-- [x] Stop messages: bold `*Claude finished:*` header + full text (was: `Claude finished: {truncated}`)
+- [x] Stop messages: bold `*Claude finished:*` header + full text as mrkdwn (no code block — content is narrative prose that may contain backticks)
 - [x] Notification messages: pass through as-is (hook handles Slack formatting)
 
 ## Future
+- [ ] Verify Stop event `sleep 0.3` is sufficient (or find a better flush signal)
 - [ ] Slash commands in Slack for claudespace operations (`/cspace list`, etc.)
 - [ ] Multi-session support
 - [ ] Remove debug `app.event("message")` listener once stable
