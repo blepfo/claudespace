@@ -52,11 +52,11 @@ app.message(async ({ message }) => {
     if (persisted && !warnedThreads.has(threadTs)) {
       warnedThreads.add(threadTs);
       const channelId = "channel" in message ? (message.channel as string) : persisted.channel_id;
-      console.log(`[slack] Reply in disconnected thread for ${persisted.name} — warning`);
+      console.log(`[slack] Reply in disconnected thread for ${persisted.session}/${persisted.name} — warning`);
       await postToThread(
         threadTs,
         channelId,
-        `This session (*${persisted.name}*) is disconnected from the bridge. Run \`claudespace connect ${persisted.name}\` to reconnect.`
+        `This session (*[${persisted.session}] ${persisted.name}*) is disconnected from the bridge. Run \`claudespace connect ${persisted.name}\` in the *${persisted.session}* session to reconnect.`
       );
     } else if (!persisted) {
       console.log(`[slack] Reply in unknown thread — ignoring`);

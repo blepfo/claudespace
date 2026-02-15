@@ -17,6 +17,7 @@ tag=$(tmux display-message -p -t "$TMUX_PANE" '#{@cspace}' 2>/dev/null || true)
 [[ "$tag" != claude:* ]] && exit 0
 
 name="${tag#claude:}"
+session=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || true)
 
 # --- Shared setup ---
 
@@ -45,10 +46,16 @@ last_assistant_text() {
     ' 2>/dev/null || true
 }
 
-# Capture visible pane content, stripped of trailing blank lines
+# Capture visible pane content, stripped of trailing blank lines.
+# Optional arg: number of lines from the bottom (default: all).
 capture_pane() {
+  local lines="${1:-}"
   local text
-  text=$(tmux capture-pane -p -t "$TMUX_PANE" 2>/dev/null || true)
+  if [[ -n "$lines" ]]; then
+    text=$(tmux capture-pane -p -t "$TMUX_PANE" -S "-${lines}" 2>/dev/null || true)
+  else
+    text=$(tmux capture-pane -p -t "$TMUX_PANE" 2>/dev/null || true)
+  fi
   [[ -z "$text" ]] && return
   echo "$text" | awk '/[^[:space:]]/{p=NR} {a[NR]=$0} END{for(i=1;i<=p;i++) print a[i]}'
 }
@@ -75,10 +82,7 @@ format_tool_detail() {
       [[ -n "$file" ]] && printf '`%s`' "$file"
       ;;
     AskUserQuestion)
-      echo "$tool_json" | jq -r '
-        .input.questions[]? |
-        .question + "\n" + ([.options[]? | "  \u2022 " + .label + " \u2014 " + .description] | join("\n"))
-      ' 2>/dev/null || true
+      # Handled by pane capture — shows the complete UI including all options
       ;;
     ExitPlanMode)
       # Plan was written to a file before ExitPlanMode — read it directly
@@ -110,6 +114,7 @@ truncate_message() {
 if [[ "$event" == "Notification" ]]; then
   message=$(echo "$input" | jq -r '.message // "Notification"' 2>/dev/null || echo "Notification")
   type="notification"
+  notif_type=$(echo "$input" | jq -r '.notification_type // empty' 2>/dev/null || true)
 
   # Try structured enrichment from transcript
   tool_json=$(last_tool_use)
@@ -120,12 +125,18 @@ if [[ "$event" == "Notification" ]]; then
     fi
   fi
 
-  # Fallback: capture pane (for idle prompts, unhandled tools, etc.)
-  if [[ -z "${detail:-}" ]]; then
+  # Capture pane for permission prompts (last 15 lines — shows yes/no/always options)
+  # or full pane as fallback for idle prompts and unhandled tools
+  if [[ "$notif_type" == "permission_prompt" ]]; then
+    pane=$(capture_pane 15)
+    if [[ -n "$pane" ]]; then
+      message=${message}$'\n```\n'"${pane}"$'\n```'
+    fi
+  elif [[ -z "${detail:-}" ]]; then
     pane=$(capture_pane)
     if [[ -n "$pane" ]]; then
       pane=$(truncate_message "$pane")
-      message="${message}"$'\n'"```"$'\n'"${pane}"$'\n'"```"
+      message=${message}$'\n```\n'"${pane}"$'\n```'
     fi
   fi
 
@@ -143,9 +154,16 @@ fi
 
 # --- Post to bridge ---
 
-curl -sf -X POST "http://localhost:${BRIDGE_PORT}/notify" \
+jq -n \
+  --arg pane_id "$TMUX_PANE" \
+  --arg name "$name" \
+  --arg session "$session" \
+  --arg message "$message" \
+  --arg type "$type" \
+  '{pane_id: $pane_id, name: $name, session: $session, message: $message, type: $type}' \
+| curl -sf -X POST "http://localhost:${BRIDGE_PORT}/notify" \
   -H 'Content-Type: application/json' \
-  -d "{\"pane_id\":\"${TMUX_PANE}\",\"name\":\"${name}\",\"message\":$(echo "$message" | jq -Rs .),\"type\":\"${type}\"}" \
+  -d @- \
   >/dev/null 2>&1 &
 
 exit 0

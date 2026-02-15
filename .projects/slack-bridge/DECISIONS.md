@@ -96,3 +96,36 @@ The bridge does NOT auto-reconnect on startup. The user runs `claudespace connec
 ## Reconnection: Unmapped Thread Warning (Dedup)
 
 When a Slack reply arrives for an unmapped thread, the bridge posts a warning to the thread with reconnection instructions. A `Set<thread_ts>` tracks which threads have been warned to avoid spamming on every reply. The Set is in-memory only — restarting the bridge resets it, which is fine (one warning per restart per thread is acceptable).
+
+## Session-scoped Thread Keys
+
+Thread map keys changed from bare `name` (e.g., `"main"`) to `session/name` (e.g., `"claudespace/main"`). Without this, two claudespace sessions for different repos with a pane named `main` would collide — `claudespace connect` in one session would steal the other's thread. The `session` field is the tmux session name (`$CSPACE_SESSION`), added to all request types and stored in `PaneMapping` and `ThreadRecord`.
+
+**Migration**: Old bare-name entries in `thread-map.json` won't match new `session/name` lookups. They're treated as missing — `claudespace connect` creates new threads. No migration code; old entries sit inert.
+
+## JSON Construction in Shell: jq -n over Embedded Substitution
+
+The hook script originally built curl JSON payloads by embedding `$(jq -Rs .)` output inside bash double-quoted strings. This had a latent bug: `jq` output contains `\"` for escaped quotes, but bash's double-quote processing strips the backslashes, producing invalid JSON. The bug was triggered when the message contained double quotes (e.g., from pane captures with terminal UI content).
+
+**Fix**: Use `jq -n --arg` to construct the entire JSON payload, piped directly to `curl -d @-`. This avoids bash string interpretation entirely.
+
+## Backticks in Bash Double-Quoted Strings
+
+Triple backticks (` ``` `) inside bash double-quoted strings (`"` ``` `"`) are interpreted as command substitution, not literal characters. The first pair forms an empty substitution, the third backtick opens a new substitution that consumes subsequent text. This causes silent script failures under `set -e`.
+
+**Fix**: Place backticks inside `$'...'` (ANSI-C quoting) where they have no special meaning: `$'\n```\n'` produces a literal newline + three backticks + newline.
+
+## Pane Capture: Permission Prompts vs AskUserQuestion
+
+Both `permission_prompt` (Bash, Edit) and `AskUserQuestion` fire as `notification_type: permission_prompt`. The hook uses different enrichment for each:
+
+- **Bash/Edit/etc.**: Structured detail (command/file) + last 15 lines of pane capture (shows Yes/No/Always options)
+- **AskUserQuestion**: Pane capture only (no structured detail). The `format_tool_detail` AskUserQuestion handler intentionally produces empty output so the pane capture fallback runs, showing the complete UI including dynamically-added options like "Chat about this" that aren't in the tool_use input.
+
+## Large Text Paste: load-buffer over send-keys
+
+For multi-line or >200-char Slack replies, `tmux send-keys -l` triggers Claude Code's paste detection, showing `[Pasted text #1 + N lines]`. The subsequent Enter may not submit. **Fix**: Use `tmux load-buffer` from stdin + `paste-buffer -d` + 200ms sleep + `send-keys Enter`. Short single-line text continues to use `send-keys -l`.
+
+## Slack Reply Limitations with AskUserQuestion
+
+Slack replies to AskUserQuestion prompts must use the **option number** (1, 2, 3), not the option text. The AskUserQuestion TUI widget responds to number keys and arrow keys; arbitrary text is ignored and Enter confirms the default (first) option. This is a known limitation of the text-based Slack→tmux interaction.

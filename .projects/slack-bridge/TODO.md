@@ -66,8 +66,28 @@ See [reconnect/README.md](reconnect/README.md) for design.
 - [x] Stop messages: bold `*Claude finished:*` header + full text as mrkdwn (no code block — content is narrative prose that may contain backticks)
 - [x] Notification messages: pass through as-is (hook handles Slack formatting)
 
+## Session Scoping (done)
+- [x] Add `session` field to all request types (`CreateThreadRequest`, `ConnectRequest`, `NotifyRequest`, `CloseRequest`)
+- [x] Add `session` to `PaneMapping` and `ThreadRecord`
+- [x] Composite key (`session/name`) in persistent thread map
+- [x] All bridge endpoints extract and pass through `session`
+- [x] Slack thread titles include session: `*[claudespace] main*`
+- [x] All 4 claudespace curl calls include `"session":"${CSPACE_SESSION}"`
+- [x] Hook script gets session via `tmux display-message '#{session_name}'`
+- [x] Auto-reconnect in `/notify` endpoint (reconnects from persistent map if active mapping lost)
+- [x] Disconnect warning includes session name
+
+## Hook Fixes (done)
+- [x] Fix JSON construction: use `jq -n --arg` piped to `curl -d @-` (was: embedded `$(jq -Rs .)` in double-quoted string — broken by quotes in message)
+- [x] Fix backticks in bash: use `$'\n```\n'` ANSI-C quoting (was: `"```"` — interpreted as command substitution)
+- [x] Permission prompt pane capture: last 15 lines for Yes/No/Always options
+- [x] AskUserQuestion: use pane capture (not structured detail) — shows all options including "Chat about this"
+
+## Large Text Paste (done)
+- [x] Multi-line or >200-char text: use `tmux load-buffer` + `paste-buffer` instead of `send-keys -l`
+- [x] 200ms sleep between paste and Enter for Claude Code to process
+
 ## Future
 - [ ] Verify Stop event `sleep 0.3` is sufficient (or find a better flush signal)
 - [ ] Slash commands in Slack for claudespace operations (`/cspace list`, etc.)
-- [ ] Multi-session support
 - [ ] Remove debug `app.event("message")` listener once stable

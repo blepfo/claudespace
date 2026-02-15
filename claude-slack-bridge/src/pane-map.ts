@@ -53,13 +53,14 @@ export function cleanup(): void {
 
 // --- Persistent thread map ---
 
-export function persistThread(name: string, threadTs: string, channelId: string): void {
-  threadMap.set(name, { name, thread_ts: threadTs, channel_id: channelId });
+export function persistThread(session: string, name: string, threadTs: string, channelId: string): void {
+  const key = `${session}/${name}`;
+  threadMap.set(key, { name, session, thread_ts: threadTs, channel_id: channelId });
   persistence.save(threadMap);
 }
 
-export function getPersistedThread(name: string): ThreadRecord | undefined {
-  return threadMap.get(name);
+export function getPersistedThread(session: string, name: string): ThreadRecord | undefined {
+  return threadMap.get(`${session}/${name}`);
 }
 
 export function getPersistedByThreadTs(threadTs: string): ThreadRecord | undefined {
@@ -71,8 +72,8 @@ export function getPersistedByThreadTs(threadTs: string): ThreadRecord | undefin
   return undefined;
 }
 
-export function removePersistedThread(name: string): boolean {
-  const deleted = threadMap.delete(name);
+export function removePersistedThread(session: string, name: string): boolean {
+  const deleted = threadMap.delete(`${session}/${name}`);
   if (deleted) persistence.save(threadMap);
   return deleted;
 }

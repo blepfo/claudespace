@@ -310,7 +310,7 @@ cmd_add() {
   if [[ -n "$_bridge_pane" ]]; then
     curl -sf -X POST "http://localhost:${BRIDGE_PORT:-7890}/thread" \
       -H 'Content-Type: application/json' \
-      -d "{\"pane_id\":\"${_bridge_pane}\",\"name\":\"${name}\"}" \
+      -d "{\"pane_id\":\"${_bridge_pane}\",\"name\":\"${name}\",\"session\":\"${CSPACE_SESSION}\"}" \
       >/dev/null 2>&1 &
   fi
 
@@ -437,7 +437,7 @@ cmd_hide() {
     if [[ "$_htag" =~ ^claude: ]]; then
       curl -sf -X POST "http://localhost:${BRIDGE_PORT:-7890}/close" \
         -H 'Content-Type: application/json' \
-        -d "{\"pane_id\":\"${pid}\",\"name\":\"${_htag#claude:}\"}" \
+        -d "{\"pane_id\":\"${pid}\",\"name\":\"${_htag#claude:}\",\"session\":\"${CSPACE_SESSION}\"}" \
         >/dev/null 2>&1 &
       break
     fi
@@ -503,7 +503,7 @@ cmd_delete() {
     if [[ -n "$_dpane" ]]; then
       curl -sf -X POST "http://localhost:${BRIDGE_PORT:-7890}/close" \
         -H 'Content-Type: application/json' \
-        -d "{\"pane_id\":\"${_dpane}\",\"name\":\"${name}\",\"permanent\":true}" \
+        -d "{\"pane_id\":\"${_dpane}\",\"name\":\"${name}\",\"session\":\"${CSPACE_SESSION}\",\"permanent\":true}" \
         >/dev/null 2>&1 &
     fi
   fi
@@ -1107,7 +1107,7 @@ cmd_connect() {
     local result
     result=$(curl -sf -X POST "http://localhost:${BRIDGE_PORT:-7890}/connect" \
       -H 'Content-Type: application/json' \
-      -d "{\"pane_id\":\"${pane_id}\",\"name\":\"${name}\"}" 2>&1) || {
+      -d "{\"pane_id\":\"${pane_id}\",\"name\":\"${name}\",\"session\":\"${CSPACE_SESSION}\"}" 2>&1) || {
       echo "$name: bridge error"
       continue
     }

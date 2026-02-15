@@ -19,9 +19,18 @@ export function sendKeys(paneId: string, text: string): void {
 
   // Escape single quotes for shell: ' → '\''
   const escaped = text.replace(/'/g, "'\\''");
+  const isLargeOrMultiline = text.includes('\n') || text.length > 200;
 
-  // -l sends text literally (no key name interpretation), then Enter submits
-  execSync(`tmux send-keys -t '${paneId}' -l '${escaped}' && tmux send-keys -t '${paneId}' Enter`, {
-    timeout: 5000,
-  });
+  if (isLargeOrMultiline) {
+    // Use load-buffer + paste-buffer for reliable large/multiline text delivery
+    execSync(`printf '%s' '${escaped}' | tmux load-buffer -`, { timeout: 5000 });
+    execSync(`tmux paste-buffer -t '${paneId}' -d`, { timeout: 5000 });
+    execSync(`sleep 0.2 && tmux send-keys -t '${paneId}' Enter`, { timeout: 5000 });
+  } else {
+    // -l sends text literally (no key name interpretation), then Enter submits
+    execSync(
+      `tmux send-keys -t '${paneId}' -l '${escaped}' && tmux send-keys -t '${paneId}' Enter`,
+      { timeout: 5000 }
+    );
+  }
 }
