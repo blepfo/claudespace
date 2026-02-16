@@ -56,7 +56,7 @@ app.message(async ({ message }) => {
       await postToThread(
         threadTs,
         channelId,
-        `This session (*[${persisted.session}] ${persisted.name}*) is disconnected from the bridge. Run \`claudespace connect ${persisted.name}\` in the *${persisted.session}* session to reconnect.`
+        `*[${persisted.name}]* Disconnected from bridge. Run \`claudespace connect ${persisted.name}\` to reconnect.`
       );
     } else if (!persisted) {
       console.log(`[slack] Reply in unknown thread — ignoring`);
@@ -76,7 +76,7 @@ app.message(async ({ message }) => {
     await postToThread(
       threadTs,
       mapping.channel_id,
-      `Sent to ${mapping.name}: \`${reply}\``
+      `*[${mapping.name}]* Sent: \`${reply}\``
     );
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
@@ -84,7 +84,7 @@ app.message(async ({ message }) => {
     await postToThread(
       threadTs,
       mapping.channel_id,
-      `Failed to send to ${mapping.name}: ${errorMsg}`
+      `*[${mapping.name}]* Failed to send: ${errorMsg}`
     );
   }
 });

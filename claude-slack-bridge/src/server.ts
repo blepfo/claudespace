@@ -22,7 +22,7 @@ expressApp.post("/thread", async (req, res) => {
     }
 
     console.log(`[tmux] ${session}/${name}: creating thread`);
-    const text = `*[${session}] ${name}* — New Claude Code session (pane ${pane_id})`;
+    const text = `*[${name}]* New Claude Code session`;
     const threadTs = await createThread(config.slackChannelId, text);
 
     paneMap.set(pane_id, {
@@ -70,14 +70,14 @@ expressApp.post("/connect", async (req, res) => {
       await postToThread(
         existing.thread_ts,
         existing.channel_id,
-        `Reconnected *[${session}] ${name}* (pane ${pane_id})`
+        `*[${name}]* Reconnected`
       );
 
       res.json({ ok: true, thread_ts: existing.thread_ts, reconnected: true });
     } else {
       // No existing thread — create a new one
       console.log(`[tmux] ${session}/${name}: no existing thread, creating new`);
-      const text = `*[${session}] ${name}* — Claude Code session (pane ${pane_id})`;
+      const text = `*[${name}]* New Claude Code session`;
       const threadTs = await createThread(config.slackChannelId, text);
 
       paneMap.set(pane_id, {
@@ -133,11 +133,12 @@ expressApp.post("/notify", async (req, res) => {
       return;
     }
 
+    const tag = `*[${mapping.name}]*`;
     let text: string;
     if (type === "stop") {
-      text = message ? `*Claude finished:*\n${message}` : "*Claude finished*";
+      text = message ? `${tag} Claude finished:\n${message}` : `${tag} Claude finished`;
     } else {
-      text = message;
+      text = `${tag} ${message}`;
     }
     const preview = message.length > 80 ? message.slice(0, 80) + "..." : message;
 
@@ -169,7 +170,7 @@ expressApp.post("/close", async (req, res) => {
       await postToThread(
         mapping.thread_ts,
         mapping.channel_id,
-        `Session *[${effectiveSession}] ${effectiveName}* closed.`
+        `*[${effectiveName}]* Session closed`
       );
       paneMap.remove(pane_id);
       if (permanent && effectiveSession && effectiveName) {

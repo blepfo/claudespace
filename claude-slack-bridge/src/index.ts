@@ -32,7 +32,7 @@ async function autoReconnect() {
       await postToThread(
         existing.thread_ts,
         existing.channel_id,
-        `Bridge restarted — reconnected *${name}* (pane ${pane_id})`
+        `*[${name}]* Bridge restarted — reconnected`
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
