@@ -1025,7 +1025,7 @@ cmd_slack() {
   fi
 
   local script_dir
-  script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  script_dir=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
   local bridge_dir="$script_dir/claude-slack-bridge"
 
   if [[ ! -d "$bridge_dir" ]]; then

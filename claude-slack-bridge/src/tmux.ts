@@ -5,6 +5,31 @@ const PANE_ID_RE = /^%\d+$/;
 const AFFIRMATIVES = new Set(["y", "yes", "ok", "approve", "go", "yeah", "yep", "sure"]);
 const NEGATIVES = new Set(["n", "no", "deny", "reject", "nope"]);
 
+/** List active claude panes: returns [{pane_id, name}] */
+export function listClaudePanes(
+  session: string
+): Array<{ pane_id: string; name: string }> {
+  try {
+    const output = execSync(
+      `tmux list-panes -t '${session}:0' -F '#{pane_id}:#{@cspace}' 2>/dev/null`,
+      { timeout: 5000, encoding: "utf-8" }
+    );
+    const results: Array<{ pane_id: string; name: string }> = [];
+    for (const line of output.trim().split("\n")) {
+      const sep = line.indexOf(":");
+      if (sep === -1) continue;
+      const paneId = line.slice(0, sep);
+      const tag = line.slice(sep + 1);
+      if (tag.startsWith("claude:")) {
+        results.push({ pane_id: paneId, name: tag.slice(7) });
+      }
+    }
+    return results;
+  } catch {
+    return [];
+  }
+}
+
 export function mapReply(text: string): string {
   const lower = text.trim().toLowerCase();
   if (AFFIRMATIVES.has(lower)) return "y";
