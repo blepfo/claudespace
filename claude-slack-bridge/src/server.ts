@@ -34,7 +34,7 @@ expressApp.post("/thread", async (req, res) => {
       channel_id: config.slackChannelId,
       created_at: Date.now(),
     });
-    paneMap.persistThread(session, name, threadTs, config.slackChannelId);
+    paneMap.persistThread(session, name, pane_id, threadTs, config.slackChannelId);
 
     console.log(`[tmux] ${session}/${name}: thread created`);
     res.json({ ok: true, thread_ts: threadTs });
@@ -54,7 +54,9 @@ expressApp.post("/connect", async (req, res) => {
       return;
     }
 
-    const existing = paneMap.getPersistedThread(session, name);
+    // Try exact match first (same pane_id), then fall back to name-based lookup
+    const existing = paneMap.getPersistedThread(session, name, pane_id)
+      ?? paneMap.getPersistedThreadByName(session, name);
 
     if (existing) {
       // Reconnect to existing thread
@@ -66,6 +68,14 @@ expressApp.post("/connect", async (req, res) => {
         channel_id: existing.channel_id,
         created_at: Date.now(),
       });
+
+      // Update persistent entry with new pane_id if it changed
+      if (existing.pane_id !== pane_id) {
+        if (existing.pane_id) {
+          paneMap.removePersistedThread(session, name, existing.pane_id);
+        }
+        paneMap.persistThread(session, name, pane_id, existing.thread_ts, existing.channel_id);
+      }
 
       console.log(`[tmux] ${session}/${name}: reconnected to existing thread`);
       await postToThread(
@@ -89,7 +99,7 @@ expressApp.post("/connect", async (req, res) => {
         channel_id: config.slackChannelId,
         created_at: Date.now(),
       });
-      paneMap.persistThread(session, name, threadTs, config.slackChannelId);
+      paneMap.persistThread(session, name, pane_id, threadTs, config.slackChannelId);
 
       console.log(`[tmux] ${session}/${name}: thread created`);
       res.json({ ok: true, thread_ts: threadTs, reconnected: false });
@@ -113,7 +123,8 @@ expressApp.post("/notify", async (req, res) => {
     // If no active mapping but we have session info, try to auto-connect
     let mapping = paneMap.getByPaneId(pane_id);
     if (!mapping && session && name) {
-      const existing = paneMap.getPersistedThread(session, name);
+      const existing = paneMap.getPersistedThread(session, name, pane_id)
+        ?? paneMap.getPersistedThreadByName(session, name);
       if (existing) {
         mapping = {
           pane_id,
@@ -213,13 +224,13 @@ expressApp.post("/close", async (req, res) => {
       );
       paneMap.remove(pane_id);
       if (permanent && effectiveSession && effectiveName) {
-        paneMap.removePersistedThread(effectiveSession, effectiveName);
+        paneMap.removePersistedThreadsByName(effectiveSession, effectiveName);
       }
     } else {
       console.log(`[tmux] ${effectiveSession ?? "?"}/${effectiveName ?? pane_id}: close received but no thread mapping`);
       // Even without an active mapping, honor permanent deletion from persistent store
       if (permanent && effectiveSession && effectiveName) {
-        paneMap.removePersistedThread(effectiveSession, effectiveName);
+        paneMap.removePersistedThreadsByName(effectiveSession, effectiveName);
       }
     }
 

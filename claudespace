@@ -258,6 +258,8 @@ cmd_add() {
   local current_cols
   current_cols=$(column_count)
 
+  local _bridge_pane=""
+
   if [[ "$current_cols" -eq 0 ]]; then
     # First column: look for the terminal pane from init to repurpose
     local term_pane
@@ -268,6 +270,7 @@ cmd_add() {
       # Repurpose the existing terminal pane as the claude pane
       _tag_pane "$term_pane" "claude:${name}"
       tmux send-keys -t "$term_pane" "cd '$wt_path' && claude" C-m
+      _bridge_pane="$term_pane"
 
       # Split to create shell pane below
       local shell_pane
@@ -281,6 +284,7 @@ cmd_add() {
 
       _tag_pane "$first_pane" "claude:${name}"
       tmux send-keys -t "$first_pane" "cd '$wt_path' && claude" C-m
+      _bridge_pane="$first_pane"
 
       local shell_pane
       shell_pane=$(tmux split-window -t "$first_pane" -v -p 30 \
@@ -295,6 +299,7 @@ cmd_add() {
       -c "$wt_path" -P -F '#{pane_id}')
     _tag_pane "$new_claude" "claude:${name}"
     tmux send-keys -t "$new_claude" "cd '$wt_path' && claude" C-m
+    _bridge_pane="$new_claude"
 
     local new_shell
     new_shell=$(tmux split-window -t "$new_claude" -v -p 30 \
@@ -305,8 +310,6 @@ cmd_add() {
   fi
 
   # Notify Slack bridge of new session (background, fail-silent)
-  local _bridge_pane
-  _bridge_pane=$(find_claude_pane "$name")
   if [[ -n "$_bridge_pane" ]]; then
     curl -sf -X POST "http://localhost:${BRIDGE_PORT:-7890}/thread" \
       -H 'Content-Type: application/json' \

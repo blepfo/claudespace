@@ -44,6 +44,7 @@ export interface PaneMapping {
 export interface ThreadRecord {
   name: string;
   session: string;
+  pane_id?: string;
   thread_ts: string;
   channel_id: string;
 }

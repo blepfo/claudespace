@@ -12,7 +12,8 @@ async function autoReconnect() {
   }
 
   for (const { pane_id, name } of panes) {
-    const existing = paneMap.getPersistedThread(config.cspaceSession, name);
+    const existing = paneMap.getPersistedThread(config.cspaceSession, name, pane_id)
+      ?? paneMap.getPersistedThreadByName(config.cspaceSession, name);
     if (!existing) {
       console.log(`[startup] ${name}: no persisted thread (skipped)`);
       continue;
