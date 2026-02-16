@@ -916,10 +916,23 @@ cmd_rename() {
     exit 1
   fi
 
+  # Capture old name from the claude pane tag
+  local old_tag
+  old_tag=$(tmux display-message -t "${col_panes[0]}" -p '#{@cspace}')
+  local old_name="${old_tag#claude:}"
+
   # Tag top pane as claude, bottom pane as shell
   _tag_pane "${col_panes[0]}" "claude:${name}"
   if [[ ${#col_panes[@]} -ge 2 ]]; then
     _tag_pane "${col_panes[1]}" "shell:${name}"
+  fi
+
+  # Notify Slack bridge of rename (background, fail-silent)
+  if [[ -n "$old_name" && "$old_name" != "$name" ]]; then
+    curl -sf -X POST "http://localhost:${BRIDGE_PORT:-7890}/rename" \
+      -H 'Content-Type: application/json' \
+      -d "{\"pane_id\":\"${col_panes[0]}\",\"old_name\":\"${old_name}\",\"new_name\":\"${name}\",\"session\":\"${CSPACE_SESSION}\"}" \
+      >/dev/null 2>&1 &
   fi
 
   echo "Renamed column to '$name'."

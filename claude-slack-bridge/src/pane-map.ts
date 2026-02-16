@@ -78,5 +78,16 @@ export function removePersistedThread(session: string, name: string): boolean {
   return deleted;
 }
 
+export function renamePersistedThread(session: string, oldName: string, newName: string): boolean {
+  const oldKey = `${session}/${oldName}`;
+  const record = threadMap.get(oldKey);
+  if (!record) return false;
+  threadMap.delete(oldKey);
+  const newKey = `${session}/${newName}`;
+  threadMap.set(newKey, { ...record, name: newName });
+  persistence.save(threadMap);
+  return true;
+}
+
 // Run cleanup every 5 minutes
 setInterval(cleanup, 5 * 60 * 1000).unref();

@@ -25,6 +25,13 @@ export interface CloseRequest {
   permanent?: boolean;
 }
 
+export interface RenameRequest {
+  pane_id: string;
+  old_name: string;
+  new_name: string;
+  session: string;
+}
+
 export interface PaneMapping {
   pane_id: string;
   name: string;

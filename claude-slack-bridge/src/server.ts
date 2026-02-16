@@ -7,6 +7,7 @@ import type {
   ConnectRequest,
   NotifyRequest,
   CloseRequest,
+  RenameRequest,
 } from "./types.js";
 
 export const expressApp = express();
@@ -148,6 +149,44 @@ expressApp.post("/notify", async (req, res) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[tmux] ${req.body?.session ?? "?"}/${req.body?.name ?? "?"}: notify error — ${msg}`);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// POST /rename — rename a pane's thread mapping
+expressApp.post("/rename", async (req, res) => {
+  try {
+    const { pane_id, old_name, new_name, session } = req.body as RenameRequest;
+    if (!pane_id || !old_name || !new_name || !session) {
+      res.status(400).json({ error: "pane_id, old_name, new_name, and session are required" });
+      return;
+    }
+
+    // Update active mapping
+    const mapping = paneMap.getByPaneId(pane_id);
+    if (mapping) {
+      paneMap.set(pane_id, { ...mapping, name: new_name });
+    }
+
+    // Update persistent thread map
+    paneMap.renamePersistedThread(session, old_name, new_name);
+
+    console.log(`[tmux] ${session}/${old_name} → ${new_name}: renamed`);
+
+    // Post to thread if we have one
+    const thread = mapping || paneMap.getByPaneId(pane_id);
+    if (thread) {
+      await postToThread(
+        thread.thread_ts,
+        thread.channel_id,
+        `*[${new_name}]* Renamed from _${old_name}_`
+      );
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[tmux] rename error — ${msg}`);
     res.status(500).json({ error: msg });
   }
 });
