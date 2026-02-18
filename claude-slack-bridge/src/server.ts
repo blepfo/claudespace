@@ -23,7 +23,8 @@ expressApp.post("/thread", async (req, res) => {
     }
 
     console.log(`[tmux] ${session}/${name}: creating thread`);
-    const text = `*[${name}]* New Claude Code session`;
+    const mention = config.slackMentionUserId ? ` <@${config.slackMentionUserId}>` : "";
+    const text = `*[${name}]* New Claude Code session${mention}`;
     const threadTs = await createThread(config.slackChannelId, text);
 
     paneMap.set(pane_id, {
@@ -88,7 +89,8 @@ expressApp.post("/connect", async (req, res) => {
     } else {
       // No existing thread — create a new one
       console.log(`[tmux] ${session}/${name}: no existing thread, creating new`);
-      const text = `*[${name}]* New Claude Code session`;
+      const mention = config.slackMentionUserId ? ` <@${config.slackMentionUserId}>` : "";
+      const text = `*[${name}]* New Claude Code session${mention}`;
       const threadTs = await createThread(config.slackChannelId, text);
 
       paneMap.set(pane_id, {

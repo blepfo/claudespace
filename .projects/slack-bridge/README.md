@@ -87,6 +87,7 @@ Edit `.env` and fill in the three required values:
 | `SLACK_BOT_TOKEN` | Yes | Bot OAuth token (`xoxb-...`) |
 | `SLACK_APP_TOKEN` | Yes | App-level token for Socket Mode (`xapp-...`) |
 | `SLACK_CHANNEL_ID` | Yes | Channel ID to post threads in |
+| `SLACK_MENTION_USER_ID` | No | Slack user ID to @ mention in new threads (subscribes you to notifications) |
 | `BRIDGE_PORT` | No | HTTP port (default: `7890`) |
 | `MAPPING_TTL_MS` | No | Pane mapping TTL in ms (default: `86400000` = 24h) |
 | `CSPACE_SESSION` | No | tmux session name (default: `claudespace`) |

@@ -126,6 +126,10 @@ Both `permission_prompt` (Bash, Edit) and `AskUserQuestion` fire as `notificatio
 
 For multi-line or >200-char Slack replies, `tmux send-keys -l` triggers Claude Code's paste detection, showing `[Pasted text #1 + N lines]`. The subsequent Enter may not submit. **Fix**: Use `tmux load-buffer` from stdin + `paste-buffer -d` + 200ms sleep + `send-keys Enter`. Short single-line text continues to use `send-keys -l`.
 
+## Thread Init Mention via Environment Variable
+
+New threads can @ mention a user by setting `SLACK_MENTION_USER_ID`. The mention is appended to the initial thread message (e.g., `*[main]* New Claude Code session <@U12345>`). This subscribes the user to the thread so they get notifications for all subsequent replies. It's an env var (not a CLI flag) because it's a per-deployment setting, not per-column.
+
 ## Slack Reply Limitations with AskUserQuestion
 
 Slack replies to AskUserQuestion prompts must use the **option number** (1, 2, 3), not the option text. The AskUserQuestion TUI widget responds to number keys and arrow keys; arbitrary text is ignored and Enter confirms the default (first) option. This is a known limitation of the text-based Slack→tmux interaction.
